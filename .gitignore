@@ -1,0 +1,84 @@
+## ─────────────────────────────────────────────────────────────
+## ExileStats — .gitignore (Visual Studio / VS Code / C#)
+## ─────────────────────────────────────────────────────────────
+
+# ExileCore2 runtime artifacts
+ErrorLog.txt
+config.ini
+*.dll.config
+map_monster_log.json
+
+# ── Build output ──────────────────────────────────────────────
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+
+# ── Visual Studio ─────────────────────────────────────────────
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.cache
+*.ilk
+*.pdb
+*.tmp
+
+# ── VS Code ───────────────────────────────────────────────────
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+.history/
+
+# ── Rider / ReSharper ─────────────────────────────────────────
+.idea/
+*.sln.iml
+_ReSharper*/
+*.DotSettings.user
+
+# ── NuGet ─────────────────────────────────────────────────────
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+project.lock.json
+
+# ── OS / misc ─────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+~$*
+*~
+*.orig
+*.bak
+node_modules/
+
+## ─────────────────────────────────────────────────────────────
+## AI assistant files — keep local, do NOT commit
+## ─────────────────────────────────────────────────────────────
+**/CLAUDE.md
+**/CLAUDE.local.md
+CLAUDE.*.md
+**/AGENTS.md
+**/GEMINI.md
+**/.cursorrules
+.cursor/
+.aider*
+.claude/
+project_specs.md
+**/project_specs.md
+*.ai.md
+.ai/
