@@ -27,4 +27,9 @@
     <PackageReference Include="ImGui.NET" Version="1.90.0.1" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The xUnit test project lives under tests/; keep its sources out of the plugin DLL. -->
+    <Compile Remove="tests\**\*.cs" />
+  </ItemGroup>
 </Project>

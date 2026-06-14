@@ -1,0 +1,184 @@
+{
+  "_comment": "Layout classifications maintained by manual/Claude review of map wall-structure (SVG grey=walkable). MapId -> type+confidence. The ExileStats plugin reads this for the dashboard; it computes all numeric stats itself. New/unseen maps default to 'unclassified'.",
+  "_layout_types": [
+    "linear",
+    "open_obstacles",
+    "converging_branches",
+    "central_loop",
+    "grid_network",
+    "corridors",
+    "perimeter_loop",
+    "boss_arena",
+    "unclassified"
+  ],
+  "maps": {
+    "MapAridPlains": {
+      "type": "open_obstacles",
+      "confidence": "high"
+    },
+    "MapAugury": {
+      "type": "central_loop",
+      "confidence": "high"
+    },
+    "MapBackwash": {
+      "type": "unclassified",
+      "confidence": "low"
+    },
+    "MapBastille": {
+      "type": "grid_network",
+      "confidence": "high"
+    },
+    "MapBurialBog": {
+      "type": "perimeter_loop",
+      "confidence": "high"
+    },
+    "MapCenotes": {
+      "type": "open_obstacles",
+      "confidence": "high"
+    },
+    "MapDeforestation": {
+      "type": "unclassified",
+      "confidence": "low"
+    },
+    "MapEpitaph": {
+      "type": "grid_network",
+      "confidence": "medium"
+    },
+    "MapExcavation": {
+      "type": "open_obstacles",
+      "confidence": "high"
+    },
+    "MapFlotsam": {
+      "type": "grid_network",
+      "confidence": "high"
+    },
+    "MapForge": {
+      "type": "corridors",
+      "confidence": "high"
+    },
+    "MapFortress": {
+      "type": "grid_network",
+      "confidence": "high"
+    },
+    "MapGreenhouse": {
+      "type": "grid_network",
+      "confidence": "high"
+    },
+    "MapGrimhaven": {
+      "type": "grid_network",
+      "confidence": "medium"
+    },
+    "MapMire": {
+      "type": "grid_network",
+      "confidence": "high"
+    },
+    "MapMothersoul_Female_Quest": {
+      "type": "corridors",
+      "confidence": "high"
+    },
+    "MapMothersoul_Male_Quest": {
+      "type": "corridors",
+      "confidence": "medium"
+    },
+    "MapOasis": {
+      "type": "open_obstacles",
+      "confidence": "medium"
+    },
+    "MapOrnateChambers": {
+      "type": "perimeter_loop",
+      "confidence": "high"
+    },
+    "MapPit": {
+      "type": "open_obstacles",
+      "confidence": "high"
+    },
+    "MapPlantation": {
+      "type": "grid_network",
+      "confidence": "medium"
+    },
+    "MapRavine": {
+      "type": "linear",
+      "confidence": "high"
+    },
+    "MapReservoir": {
+      "type": "grid_network",
+      "confidence": "high"
+    },
+    "MapRiverhold": {
+      "type": "perimeter_loop",
+      "confidence": "high"
+    },
+    "MapRiverside": {
+      "type": "linear",
+      "confidence": "high"
+    },
+    "MapRugosa": {
+      "type": "perimeter_loop",
+      "confidence": "medium"
+    },
+    "MapRustbowl": {
+      "type": "open_obstacles",
+      "confidence": "high"
+    },
+    "MapSanctuary": {
+      "type": "grid_network",
+      "confidence": "medium"
+    },
+    "MapSavanna": {
+      "type": "open_obstacles",
+      "confidence": "medium"
+    },
+    "MapSinterRift": {
+      "type": "open_obstacles",
+      "confidence": "medium"
+    },
+    "MapSlash": {
+      "type": "open_obstacles",
+      "confidence": "high"
+    },
+    "MapSlick": {
+      "type": "perimeter_loop",
+      "confidence": "medium"
+    },
+    "MapSpring_": {
+      "type": "linear",
+      "confidence": "high"
+    },
+    "MapStronghold": {
+      "type": "grid_network",
+      "confidence": "high"
+    },
+    "MapSulphuricCaverns": {
+      "type": "grid_network",
+      "confidence": "medium"
+    },
+    "MapTrenches": {
+      "type": "converging_branches",
+      "confidence": "high"
+    },
+    "MapUberBoss_Divinity": {
+      "type": "boss_arena",
+      "confidence": "high"
+    },
+    "MapUberBoss_Monolith": {
+      "type": "boss_arena",
+      "confidence": "high"
+    },
+    "MapUberBoss_Ritual": {
+      "type": "boss_arena",
+      "confidence": "high"
+    },
+    "MapUniqueReactor_04": {
+      "type": "boss_arena",
+      "confidence": "low"
+    },
+    "MapWaywardIsle": {
+      "type": "grid_network",
+      "confidence": "medium"
+    },
+    "MapWillow": {
+      "type": "open_obstacles",
+      "confidence": "high"
+    }
+  }
+}

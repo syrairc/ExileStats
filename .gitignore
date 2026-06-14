@@ -7,6 +7,12 @@ ErrorLog.txt
 config.ini
 *.dll.config
 map_monster_log.json
+Errors.txt
+
+# Plugin data output — contains player/run data, never commit
+maps/
+stash/
+reports/
 
 # ── Build output ──────────────────────────────────────────────
 [Bb]in/
@@ -21,6 +27,8 @@ bld/
 [Ll]og/
 [Ll]ogs/
 artifacts/
+*.exe.*
+*.exe
 
 # ── Visual Studio ─────────────────────────────────────────────
 .vs/
@@ -41,6 +49,7 @@ artifacts/
 !.vscode/extensions.json
 *.code-workspace
 .history/
+docs/
 
 # ── Rider / ReSharper ─────────────────────────────────────────
 .idea/
@@ -54,6 +63,9 @@ _ReSharper*/
 **/[Pp]ackages/*
 !**/[Pp]ackages/build/
 project.lock.json
+
+# ── Tests ─────────────────────────────────────────────────
+tests/
 
 # ── OS / misc ─────────────────────────────────────────────────
 Thumbs.db
@@ -82,3 +94,6 @@ project_specs.md
 **/project_specs.md
 *.ai.md
 .ai/
+tests/ExileStats.Tests/ExileStats.Tests.csproj
+*.md
+!README.md

@@ -1,0 +1,1006 @@
+{
+  "schema_version": 3,
+  "description": "Layout + size + monster-density database for maps, keyed by MapId. Primary data source is the ExileStats plugin (maps/<MapId>_<instance>/run.json + map.svg). Layout judged ONLY from wall/room structure (in SVGs grey=walkable, white holes=obstacles); colored objective lines are ignored. Maps can have multiple instances/runs; stats are aggregated per MapId.",
+  "last_updated": "2026-06-13",
+  "data_sources": {
+    "stats": "ExileStats/maps/<folder>/run.json (per run)",
+    "layout_image": "map.svg (newer) or legacy Radar PNG",
+    "runs_index": "ExileStats/maps/index.json"
+  },
+  "layout_types": {
+    "linear": "A single long path/corridor to a boss room at the far end.",
+    "open_obstacles": "One large open area scattered with discrete obstacles; free-roam, no defined corridor.",
+    "converging_branches": "Multiple diverging paths that funnel back to a single boss room (Trenches pattern).",
+    "central_loop": "A ring of rooms with the boss arena in the CENTRE (Augury pattern).",
+    "grid_network": "A dense interconnected web of rooms with multiple parallel routes and side branches.",
+    "corridors": "A sparse skeleton of narrow (~single-width) passages linking discrete rooms, with large non-walkable gaps between them (low walkable fill). Distinct from grid_network, which is a denser web of thicker, adjoining rooms.",
+    "perimeter_loop": "A walkable ring wrapping a large EMPTY central void (boss usually on a spur).",
+    "boss_arena": "Dedicated boss-fight map: short approach to a single boss room, minimal trash (MonstersTotal ~1).",
+    "unclassified": "No layout image yet, or does not clearly fit a type."
+  },
+  "size_method": "Map size = AreaWidth x AreaHeight from run.json (in-game grid units), median across runs. Replaces the old image-pixel footprint (schema v2).",
+  "density_methodology": {
+    "metric": "monsters_per_megagrid (monsters per 1,000,000 grid^2 of map area)",
+    "formula": "median(MonstersTotal of full-clear runs) / (area_grid / 1,000,000)",
+    "full_clear_filter": "a run counts as a full clear if duration >= 30s AND MonstersTotal >= 50; abandoned/near-entry runs are excluded as low outliers",
+    "rating_bands_provisional": {
+      "very_low": "<60",
+      "low": "60-79",
+      "medium": "80-94",
+      "high": "95-134",
+      "very_high": ">=135"
+    },
+    "note": "Bands are PROVISIONAL, derived from the quartiles of current observed densities (~45-200). Recalibrate as more full-clear runs accumulate. Maps with no full clear yet, or older runs lacking AreaWidth/Height, show density null with a reason."
+  },
+  "maps": {
+    "MapAridPlains": {
+      "layout_type": "open_obstacles",
+      "confidence": "high",
+      "notes": "Large organic open cavern, mostly walkable with scattered obstacle holes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 283,
+        "area_width": 2208,
+        "area_height": 1587,
+        "area_grid": 3504096,
+        "clear_monsters_median": 283,
+        "monster_breakdown_avg": {
+          "W": 256,
+          "M": 20,
+          "R": 5,
+          "U": 2
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 80.8,
+        "rating": "medium"
+      }
+    },
+    "MapAugury": {
+      "layout_type": "central_loop",
+      "confidence": "high",
+      "notes": "Ring of rooms around a circular boss arena in the dead centre.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 298,
+        "area_width": 1220,
+        "area_height": 1219,
+        "area_grid": 1487180,
+        "clear_monsters_median": 298,
+        "monster_breakdown_avg": {
+          "W": 213,
+          "M": 73,
+          "R": 11,
+          "U": 1
+        },
+        "avg_loot_value": 3.36
+      },
+      "density": {
+        "monsters_per_megagrid": 200.4,
+        "rating": "very_high"
+      }
+    },
+    "MapBackwash": {
+      "layout_type": "unclassified",
+      "confidence": "low",
+      "notes": "No SVG captured (older run); monster data only - pending layout image.",
+      "source": "exilestats_no_image",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 729,
+        "clear_monsters_median": 729,
+        "monster_breakdown_avg": {
+          "W": 648,
+          "M": 60,
+          "R": 16,
+          "U": 5
+        }
+      },
+      "density": {
+        "value": null,
+        "reason": "older runs lack AreaWidth/Height - no size to compute density"
+      }
+    },
+    "MapBastille": {
+      "layout_type": "grid_network",
+      "confidence": "high",
+      "notes": "Dense interconnected building of rooms and corridors; many routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 337,
+        "area_width": 1864,
+        "area_height": 1863,
+        "area_grid": 3472632,
+        "clear_monsters_median": 337,
+        "monster_breakdown_avg": {
+          "W": 266,
+          "M": 60,
+          "R": 9,
+          "U": 2
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 97.0,
+        "rating": "high"
+      }
+    },
+    "MapBurialBog": {
+      "layout_type": "perimeter_loop",
+      "confidence": "high",
+      "notes": "Walkable ring around a large empty central void.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 1,
+        "max_monsters": 452,
+        "area_width": 1726,
+        "area_height": 2346,
+        "area_grid": 4049196,
+        "clear_monsters_median": 452,
+        "monster_breakdown_avg": {
+          "W": 419,
+          "M": 24,
+          "R": 8,
+          "U": 1
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 111.6,
+        "rating": "high"
+      }
+    },
+    "MapCenotes": {
+      "layout_type": "open_obstacles",
+      "confidence": "high",
+      "notes": "Open cavern with large round sinkhole voids and scattered obstacles.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 962,
+        "area_width": 2140,
+        "area_height": 1932,
+        "area_grid": 4134480,
+        "clear_monsters_median": 962,
+        "monster_breakdown_avg": {
+          "W": 809,
+          "M": 115,
+          "R": 35,
+          "U": 3
+        },
+        "avg_loot_value": 266.78
+      },
+      "density": {
+        "monsters_per_megagrid": 232.7,
+        "rating": "very_high"
+      }
+    },
+    "MapDeforestation": {
+      "layout_type": "unclassified",
+      "confidence": "low",
+      "notes": "No SVG captured (older runs); monster data only - pending layout image.",
+      "source": "exilestats_no_image",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 5,
+        "n_full_clears": 4,
+        "max_monsters": 693,
+        "clear_monsters_median": 499,
+        "monster_breakdown_avg": {
+          "W": 403.8,
+          "M": 30,
+          "R": 9.8,
+          "U": 4
+        }
+      },
+      "density": {
+        "value": null,
+        "reason": "older runs lack AreaWidth/Height - no size to compute density"
+      }
+    },
+    "MapEpitaph": {
+      "layout_type": "grid_network",
+      "confidence": "medium",
+      "notes": "Outer corridor ring plus internal cross-corridors splitting quadrant rooms; multiple routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 429,
+        "area_width": 1496,
+        "area_height": 2047,
+        "area_grid": 3062312,
+        "clear_monsters_median": 429,
+        "monster_breakdown_avg": {
+          "W": 410,
+          "M": 12,
+          "R": 5,
+          "U": 2
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 140.1,
+        "rating": "very_high"
+      }
+    },
+    "MapExcavation": {
+      "layout_type": "open_obstacles",
+      "confidence": "high",
+      "notes": "Large solid open dig-site; mostly walkable with many small scattered obstacles.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 1,
+        "max_monsters": 440,
+        "area_width": 2278,
+        "area_height": 2001,
+        "area_grid": 4558278,
+        "clear_monsters_median": 440,
+        "monster_breakdown_avg": {
+          "W": 361,
+          "M": 59,
+          "R": 17,
+          "U": 3
+        },
+        "avg_loot_value": 17.1
+      },
+      "density": {
+        "monsters_per_megagrid": 96.5,
+        "rating": "high"
+      }
+    },
+    "MapFlotsam": {
+      "layout_type": "grid_network",
+      "confidence": "high",
+      "notes": "Sprawling winding web of organic rooms with many loops.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 585,
+        "area_width": 2968,
+        "area_height": 2277,
+        "area_grid": 6758136,
+        "clear_monsters_median": 585,
+        "monster_breakdown_avg": {
+          "W": 533,
+          "M": 44,
+          "R": 6,
+          "U": 2
+        },
+        "avg_loot_value": 0.32
+      },
+      "density": {
+        "monsters_per_megagrid": 86.6,
+        "rating": "medium"
+      }
+    },
+    "MapForge": {
+      "layout_type": "corridors",
+      "confidence": "high",
+      "notes": "Sparse network of narrow corridors linking discrete rooms, with large empty gaps between them.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 1,
+        "max_monsters": 245,
+        "area_width": 3037,
+        "area_height": 3036,
+        "area_grid": 8987043,
+        "clear_monsters_median": 245,
+        "monster_breakdown_avg": {
+          "W": 198,
+          "M": 41,
+          "R": 5,
+          "U": 1
+        },
+        "avg_loot_value": 21.56
+      },
+      "density": {
+        "monsters_per_megagrid": 27.3,
+        "rating": "very_low"
+      }
+    },
+    "MapFortress": {
+      "layout_type": "grid_network",
+      "confidence": "high",
+      "notes": "Dense interconnected fortress of rooms and corridors; many routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 424,
+        "area_width": 2278,
+        "area_height": 2277,
+        "area_grid": 5187006,
+        "clear_monsters_median": 424,
+        "monster_breakdown_avg": {
+          "W": 373,
+          "M": 36,
+          "R": 12,
+          "U": 3
+        },
+        "avg_loot_value": 3.45
+      },
+      "density": {
+        "monsters_per_megagrid": 81.7,
+        "rating": "medium"
+      }
+    },
+    "MapGreenhouse": {
+      "layout_type": "grid_network",
+      "confidence": "high",
+      "notes": "Dense rectangular room-grid with multiple routes; boss room at far end.",
+      "source": "radar_png_legacy",
+      "last_reviewed": "2026-06-13",
+      "stats": null,
+      "density": {
+        "value": null,
+        "reason": "no ExileStats run data (legacy layout only)"
+      }
+    },
+    "MapGrimhaven": {
+      "layout_type": "grid_network",
+      "confidence": "medium",
+      "notes": "Room clusters linked by corridors with branching routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 2,
+        "max_monsters": 553,
+        "area_width": 2692,
+        "area_height": 2829,
+        "area_grid": 7615668,
+        "clear_monsters_median": 401,
+        "monster_breakdown_avg": {
+          "W": 325,
+          "M": 60,
+          "R": 13.5,
+          "U": 3
+        },
+        "avg_loot_value": 22.51
+      },
+      "density": {
+        "monsters_per_megagrid": 52.7,
+        "rating": "very_low"
+      }
+    },
+    "MapMire": {
+      "layout_type": "grid_network",
+      "confidence": "high",
+      "notes": "Interconnected web of organic caverns with multiple routes and a prominent round chamber.",
+      "source": "exilestats+radar_png",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 701,
+        "area_width": 2002,
+        "area_height": 2001,
+        "area_grid": 4006002,
+        "clear_monsters_median": 701,
+        "monster_breakdown_avg": {
+          "W": 624,
+          "M": 63,
+          "R": 11,
+          "U": 3
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 175.0,
+        "rating": "very_high"
+      }
+    },
+    "MapMothersoul_Female_Quest": {
+      "layout_type": "corridors",
+      "confidence": "high",
+      "notes": "Lattice of narrow corridors linking small rooms with a boss room on a spur (quest map); sparse, thin passages.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 0,
+        "max_monsters": 7,
+        "area_width": 1794,
+        "area_height": 2208,
+        "area_grid": 3961152,
+        "avg_loot_value": 0.81
+      },
+      "density": {
+        "value": null,
+        "reason": "no full-clear run yet (only abandoned/near-entry runs)"
+      }
+    },
+    "MapMothersoul_Male_Quest": {
+      "layout_type": "corridors",
+      "confidence": "medium",
+      "notes": "Narrow corridors forming a ring with internal links and a boss room on a spur (quest map); sparse, thin passages.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 0,
+        "max_monsters": 7,
+        "area_width": 2416,
+        "area_height": 2001,
+        "area_grid": 4834416,
+        "avg_loot_value": 1.78
+      },
+      "density": {
+        "value": null,
+        "reason": "no full-clear run yet (only abandoned/near-entry runs)"
+      }
+    },
+    "MapOasis": {
+      "layout_type": "open_obstacles",
+      "confidence": "medium",
+      "notes": "Large open desert area with a settlement cluster and big central voids.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 2,
+        "max_monsters": 525,
+        "area_width": 1726,
+        "area_height": 2139,
+        "area_grid": 3691914,
+        "clear_monsters_median": 342,
+        "monster_breakdown_avg": {
+          "W": 292,
+          "M": 45,
+          "R": 3.5,
+          "U": 2
+        },
+        "avg_loot_value": 16.42
+      },
+      "density": {
+        "monsters_per_megagrid": 92.8,
+        "rating": "medium"
+      }
+    },
+    "MapOrnateChambers": {
+      "layout_type": "perimeter_loop",
+      "confidence": "high",
+      "notes": "Symmetric corridor ring around a large empty central chamber; boss room on a spur.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 416,
+        "area_width": 1380,
+        "area_height": 2208,
+        "area_grid": 3047040,
+        "clear_monsters_median": 416,
+        "monster_breakdown_avg": {
+          "W": 368,
+          "M": 34,
+          "R": 12,
+          "U": 2
+        },
+        "avg_loot_value": 8.92
+      },
+      "density": {
+        "monsters_per_megagrid": 136.5,
+        "rating": "very_high"
+      }
+    },
+    "MapPit": {
+      "layout_type": "open_obstacles",
+      "confidence": "high",
+      "notes": "Large open arena densely packed with scattered obstacle islands; central round chamber.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 174,
+        "area_width": 1634,
+        "area_height": 1633,
+        "area_grid": 2668322,
+        "clear_monsters_median": 174,
+        "monster_breakdown_avg": {
+          "W": 149,
+          "M": 24,
+          "R": 0,
+          "U": 1
+        },
+        "avg_loot_value": 0.03
+      },
+      "density": {
+        "monsters_per_megagrid": 65.2,
+        "rating": "low"
+      }
+    },
+    "MapPlantation": {
+      "layout_type": "grid_network",
+      "confidence": "medium",
+      "notes": "Perimeter pillar-lined corridors wrapping large open fields; multiple routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 462,
+        "area_width": 1588,
+        "area_height": 2139,
+        "area_grid": 3396732,
+        "clear_monsters_median": 462,
+        "monster_breakdown_avg": {
+          "W": 380,
+          "M": 70,
+          "R": 8,
+          "U": 4
+        },
+        "avg_loot_value": 726.03
+      },
+      "density": {
+        "monsters_per_megagrid": 136.0,
+        "rating": "very_high"
+      }
+    },
+    "MapRavine": {
+      "layout_type": "linear",
+      "confidence": "high",
+      "notes": "Single long winding corridor from end to end.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 4,
+        "n_full_clears": 3,
+        "max_monsters": 978,
+        "area_width": 4072,
+        "area_height": 4071,
+        "area_grid": 16577112,
+        "clear_monsters_median": 749,
+        "monster_breakdown_avg": {
+          "W": 660,
+          "M": 66.3,
+          "R": 9.7,
+          "U": 2.3
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 45.2,
+        "rating": "very_low"
+      }
+    },
+    "MapReservoir": {
+      "layout_type": "grid_network",
+      "confidence": "high",
+      "notes": "Interconnected lattice of rooms/corridors with multiple parallel routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 3,
+        "n_full_clears": 3,
+        "max_monsters": 268,
+        "area_width": 2002,
+        "area_height": 1863,
+        "area_grid": 3729726,
+        "clear_monsters_median": 239,
+        "monster_breakdown_avg": {
+          "W": 213,
+          "M": 18.7,
+          "R": 4.3,
+          "U": 1.3
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 64.1,
+        "rating": "low"
+      }
+    },
+    "MapRiverhold": {
+      "layout_type": "perimeter_loop",
+      "confidence": "high",
+      "notes": "Walkable ring around a large empty centre; boss cluster on a spur.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 627,
+        "area_width": 2830,
+        "area_height": 2829,
+        "area_grid": 8006070,
+        "clear_monsters_median": 627,
+        "monster_breakdown_avg": {
+          "W": 551,
+          "M": 67,
+          "R": 8,
+          "U": 1
+        }
+      },
+      "density": {
+        "monsters_per_megagrid": 78.3,
+        "rating": "low"
+      }
+    },
+    "MapRiverside": {
+      "layout_type": "linear",
+      "confidence": "high",
+      "notes": "Long chain of rooms forming one continuous route.",
+      "source": "radar_png_legacy",
+      "last_reviewed": "2026-06-13",
+      "stats": null,
+      "density": {
+        "value": null,
+        "reason": "no ExileStats run data (legacy layout only)"
+      }
+    },
+    "MapRugosa": {
+      "layout_type": "perimeter_loop",
+      "confidence": "medium",
+      "notes": "Thick organic walkable ring around a large empty centre; round boss room on a spur.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 0,
+        "max_monsters": 2,
+        "area_width": 2278,
+        "area_height": 2001,
+        "area_grid": 4558278,
+        "avg_loot_value": 5.04
+      },
+      "density": {
+        "value": null,
+        "reason": "no full-clear run yet (only abandoned/near-entry runs)"
+      }
+    },
+    "MapRustbowl": {
+      "layout_type": "open_obstacles",
+      "confidence": "high",
+      "notes": "Large open organic area with scattered crater obstacles.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 311,
+        "area_width": 1656,
+        "area_height": 2070,
+        "area_grid": 3427920,
+        "clear_monsters_median": 311,
+        "monster_breakdown_avg": {
+          "W": 276,
+          "M": 30,
+          "R": 4,
+          "U": 1
+        },
+        "avg_loot_value": 5.54
+      },
+      "density": {
+        "monsters_per_megagrid": 90.7,
+        "rating": "medium"
+      }
+    },
+    "MapSanctuary": {
+      "layout_type": "grid_network",
+      "confidence": "medium",
+      "notes": "Interconnected rooms and corridors with multiple routes; boss room on a spur.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 244,
+        "area_width": 1794,
+        "area_height": 1794,
+        "area_grid": 3218436,
+        "clear_monsters_median": 244,
+        "monster_breakdown_avg": {
+          "W": 223,
+          "M": 15,
+          "R": 3,
+          "U": 3
+        },
+        "avg_loot_value": 2.51
+      },
+      "density": {
+        "monsters_per_megagrid": 75.8,
+        "rating": "low"
+      }
+    },
+    "MapSavanna": {
+      "layout_type": "open_obstacles",
+      "confidence": "medium",
+      "notes": "Large mostly-open area with scattered obstacles and a few structures.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 0,
+        "max_monsters": 3,
+        "area_width": 2278,
+        "area_height": 2139,
+        "area_grid": 4872642
+      },
+      "density": {
+        "value": null,
+        "reason": "no full-clear run yet (only abandoned/near-entry runs)"
+      }
+    },
+    "MapSinterRift": {
+      "layout_type": "open_obstacles",
+      "confidence": "medium",
+      "notes": "Wide open caverns with large impassable voids and scattered obstacles.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 344,
+        "area_width": 2484,
+        "area_height": 1932,
+        "area_grid": 4799088,
+        "clear_monsters_median": 344,
+        "monster_breakdown_avg": {
+          "W": 316,
+          "M": 20,
+          "R": 6,
+          "U": 2
+        },
+        "avg_loot_value": 14.31
+      },
+      "density": {
+        "monsters_per_megagrid": 71.7,
+        "rating": "low"
+      }
+    },
+    "MapSlash": {
+      "layout_type": "open_obstacles",
+      "confidence": "high",
+      "notes": "Wide open cavern with many scattered small obstacles.",
+      "source": "radar_png_legacy",
+      "last_reviewed": "2026-06-13",
+      "stats": null,
+      "density": {
+        "value": null,
+        "reason": "no ExileStats run data (legacy layout only)"
+      }
+    },
+    "MapSlick": {
+      "layout_type": "perimeter_loop",
+      "confidence": "medium",
+      "notes": "Corridor ring around an empty centre; round boss room on a spur.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 3,
+        "n_full_clears": 3,
+        "max_monsters": 258,
+        "area_width": 2002,
+        "area_height": 2415,
+        "area_grid": 4834830,
+        "clear_monsters_median": 256,
+        "monster_breakdown_avg": {
+          "W": 182.7,
+          "M": 35,
+          "R": 6.7,
+          "U": 2.3
+        },
+        "avg_loot_value": 4.22
+      },
+      "density": {
+        "monsters_per_megagrid": 52.9,
+        "rating": "very_low"
+      }
+    },
+    "MapSpring_": {
+      "layout_type": "linear",
+      "confidence": "high",
+      "notes": "Single long winding horizontal corridor end to end.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 607,
+        "area_width": 4140,
+        "area_height": 828,
+        "area_grid": 3427920,
+        "clear_monsters_median": 607,
+        "monster_breakdown_avg": {
+          "W": 508,
+          "M": 66,
+          "R": 30,
+          "U": 3
+        },
+        "avg_loot_value": 157.65
+      },
+      "density": {
+        "monsters_per_megagrid": 177.1,
+        "rating": "very_high"
+      }
+    },
+    "MapStronghold": {
+      "layout_type": "grid_network",
+      "confidence": "high",
+      "notes": "Dense interconnected web of rooms; many routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 2,
+        "max_monsters": 618,
+        "area_width": 2381,
+        "area_height": 3001,
+        "area_grid": 7050006,
+        "clear_monsters_median": 512,
+        "monster_breakdown_avg": {
+          "W": 451.5,
+          "M": 50.5,
+          "R": 6.5,
+          "U": 4
+        },
+        "avg_loot_value": 11.99
+      },
+      "density": {
+        "monsters_per_megagrid": 72.7,
+        "rating": "low"
+      }
+    },
+    "MapSulphuricCaverns": {
+      "layout_type": "grid_network",
+      "confidence": "medium",
+      "notes": "Interconnected organic caverns funneling down to a boss room.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 537,
+        "area_width": 2208,
+        "area_height": 2208,
+        "area_grid": 4875264,
+        "clear_monsters_median": 537,
+        "monster_breakdown_avg": {
+          "W": 492,
+          "M": 29,
+          "R": 13,
+          "U": 3
+        },
+        "avg_loot_value": 14.81
+      },
+      "density": {
+        "monsters_per_megagrid": 110.1,
+        "rating": "high"
+      }
+    },
+    "MapTrenches": {
+      "layout_type": "converging_branches",
+      "confidence": "high",
+      "notes": "Branching cave paths that funnel to a single boss room.",
+      "source": "radar_png_legacy",
+      "last_reviewed": "2026-06-13",
+      "stats": null,
+      "density": {
+        "value": null,
+        "reason": "no ExileStats run data (legacy layout only)"
+      }
+    },
+    "MapUberBoss_Divinity": {
+      "layout_type": "boss_arena",
+      "confidence": "high",
+      "notes": "Dedicated boss arena: short approach to a single boss room, minimal trash.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 2,
+        "n_full_clears": 0,
+        "max_monsters": 11,
+        "area_width": 1128,
+        "area_height": 2783,
+        "area_grid": 3139224,
+        "avg_loot_value": 6.92
+      },
+      "density": {
+        "value": null,
+        "reason": "no full-clear run yet (only abandoned/near-entry runs)"
+      }
+    },
+    "MapUberBoss_Monolith": {
+      "layout_type": "boss_arena",
+      "confidence": "high",
+      "notes": "Dedicated boss map (no SVG captured); minimal trash.",
+      "source": "exilestats_no_image",
+      "last_reviewed": "2026-06-13",
+      "stats": null,
+      "density": {
+        "value": null,
+        "reason": "no ExileStats run data (legacy layout only)"
+      }
+    },
+    "MapUberBoss_Ritual": {
+      "layout_type": "boss_arena",
+      "confidence": "high",
+      "notes": "Dedicated boss encounter map (Caer Tarth); minimal trash.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 0,
+        "max_monsters": 12,
+        "area_width": 2968,
+        "area_height": 2231,
+        "area_grid": 6621608
+      },
+      "density": {
+        "value": null,
+        "reason": "no full-clear run yet (only abandoned/near-entry runs)"
+      }
+    },
+    "MapUniqueReactor_04": {
+      "layout_type": "boss_arena",
+      "confidence": "low",
+      "notes": "Unique boss/reactor map; small structures, partial reveal.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": null,
+      "density": {
+        "value": null,
+        "reason": "no ExileStats run data (legacy layout only)"
+      }
+    },
+    "MapWaywardIsle": {
+      "layout_type": "grid_network",
+      "confidence": "medium",
+      "notes": "Wide crescent of interconnected caverns with branching routes.",
+      "source": "exilestats_svg",
+      "last_reviewed": "2026-06-13",
+      "stats": {
+        "n_runs": 1,
+        "n_full_clears": 1,
+        "max_monsters": 412,
+        "area_width": 4072,
+        "area_height": 2139,
+        "area_grid": 8710008,
+        "clear_monsters_median": 412,
+        "monster_breakdown_avg": {
+          "W": 348,
+          "M": 55,
+          "R": 7,
+          "U": 2
+        },
+        "avg_loot_value": 0.57
+      },
+      "density": {
+        "monsters_per_megagrid": 47.3,
+        "rating": "very_low"
+      }
+    },
+    "MapWillow": {
+      "layout_type": "open_obstacles",
+      "confidence": "high",
+      "notes": "Large open cavern of scattered obstacles with one walled boss room.",
+      "source": "radar_png_legacy",
+      "last_reviewed": "2026-06-13",
+      "stats": null,
+      "density": {
+        "value": null,
+        "reason": "no ExileStats run data (legacy layout only)"
+      }
+    }
+  }
+}
