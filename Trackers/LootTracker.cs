@@ -17,6 +17,7 @@ namespace ExileStats;
 public class LootTracker
 {
     private readonly HashSet<string> _seen = new();
+    private readonly HashSet<long> _seenIds = new();   // this session's ground entities already looked at
     private int _zoneSwitchId;   // current visit; stamped onto newly-seen items
 
     /// <summary>Reset the seen-set and seed it from already-logged fingerprints for the instance we're
@@ -24,6 +25,7 @@ public class LootTracker
     public void SetArea(IEnumerable<string> existingFingerprints, int zoneSwitchId)
     {
         _seen.Clear();
+        _seenIds.Clear();
         _zoneSwitchId = zoneSwitchId;
         if (existingFingerprints != null)
             foreach (var fp in existingFingerprints)
@@ -44,11 +46,16 @@ public class LootTracker
             // read yet. They become valid as you approach, and we re-scan every Tick, so they're logged then.
             if (e is not { Type: EntityType.WorldItem, IsValid: true })
                 continue;
+            // ponytail: id gate before the fingerprint string. add only once the child item entity is
+            // readable, so an item that streams in late still gets logged next tick
+            if (_seenIds.Contains(e.Id))
+                continue;
 
             // The ground entity wraps the real item entity (name, mods, etc.).
             var itemEntity = e.GetComponent<WorldItem>()?.ItemEntity;
             if (itemEntity == null || string.IsNullOrEmpty(itemEntity.Path))
                 continue;
+            _seenIds.Add(e.Id);
 
             // Gold piles drop constantly and carry no rarity/mods — not worth logging.
             if (itemEntity.Path == "Metadata/Items/Currency/GoldCoin")

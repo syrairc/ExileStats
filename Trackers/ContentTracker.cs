@@ -1,17 +1,18 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using ExileCore2.PoEMemory.MemoryObjects;
 using ExileCore2.Shared.Enums;
 
 namespace ExileStats;
 
 /// <summary>
-/// Per-Tick scan of <c>GameController.Entities</c> for map content (ritual / breach / strongbox / essence /
-/// boss / …). Records WHERE (<c>GridPos</c>) + WHEN (first-seen elapsed) each content instance appears, and
+/// Per-Tick scan of the shared <c>AllValid</c> bucket for map content (ritual / breach / strongbox / essence /
+/// boss / ...). Records WHERE (<c>GridPos</c>) + WHEN (first-seen elapsed) each content instance appears, and
 /// upgrades its terminal state (opened / used / dead) in place on later ticks. No UI.
 ///
 /// Dedup is by <b>Entity.Id</b> (unique + per-area-stable) so an instance is logged exactly once at its
-/// <i>first</i> observed position — content that moves (map bosses, rogue exiles, tormented spirits) must not
+/// <i>first</i> observed position - content that moves (map bosses, rogue exiles, tormented spirits) must not
 /// drop a new point every tick. A position fingerprint (type + rounded grid pos) is the cross-visit key:
 /// seeded from content.json on entry so re-entry / restart don't re-log, and it collapses co-located
 /// entities of one mechanic (e.g. a ritual's rune object + interactable) into a single row.
@@ -21,6 +22,11 @@ public class ContentTracker
     // Entity.Id -> the logged sighting, for everything seen this session. Keeps a moving entity pinned to its
     // first row (no per-tick re-log) while still allowing state upgrades.
     private readonly Dictionary<long, ContentSighting> _byId = new();
+
+    // Entity.Id -> its rule, so a tracked entity never re-runs the 15-rule cascade
+    private readonly Dictionary<long, ContentDef> _defById = new();
+    // ids that classified as nothing this area. the bulk of AllValid lands here after one look
+    private readonly HashSet<long> _notContent = new();
 
     // Fingerprint (type@roundedPos) -> sighting. Seeded from disk on entry; the cross-visit / co-located key.
     private readonly Dictionary<string, ContentSighting> _known = new();
@@ -36,6 +42,8 @@ public class ContentTracker
     public void SetArea(IDictionary<string, ContentSighting> known, int zoneSwitchId)
     {
         _byId.Clear();
+        _defById.Clear();
+        _notContent.Clear();
         _known.Clear();
         _zoneSwitchId = zoneSwitchId;
         if (known != null)
@@ -50,13 +58,19 @@ public class ContentTracker
     /// only while a runestone is present this tick (so the label/window walk is skipped otherwise).</summary>
     public List<ContentSighting> Scan(IEnumerable<Entity> entities, double elapsedSeconds,
         Func<int?> readTribute = null, Func<List<ExpeditionSiteInfo>> readExpedition = null,
-        Func<RitualRewardState> readRitualRewards = null)
+        Func<RitualRewardState> readRitualRewards = null, TrackerProfiler prof = null)
     {
         var dirty = new List<ContentSighting>();
         if (entities == null)
             return dirty;
 
         var elapsed = Math.Round(elapsedSeconds, 1);
+
+        // diagnostic counters + per-tick ms totals, only populated while the profiler is on (Performance tab).
+        // Totals, not per-call: a "last" of one call out of hundreds says nothing about the tick's budget.
+        var diag = prof != null;
+        var nSeen = 0; var nClassify = 0; var nRitualEnt = 0; var nUpdate = 0;
+        long tClassify = 0, tRitual = 0, tUpdate = 0;
 
         // Fingerprint of the ritual site whose altar is active this tick (current_state == 2), if any.
         string activeRitualFp = null;
@@ -65,18 +79,39 @@ public class ContentTracker
 
         foreach (var e in entities)
         {
-            // Skip not-yet-streamed entities — components aren't safe to read; they're re-scanned each Tick
+            // Skip not-yet-streamed entities - components aren't safe to read; they're re-scanned each Tick
             // and logged once close enough to be valid (which is also "when" they appear to the player).
             if (e is not { IsValid: true })
                 continue;
+            nSeen++;
 
-            var def = ContentCatalog.Classify(e);
-            if (def == null)
-                continue;
+            if (!_defById.TryGetValue(e.Id, out var def))
+            {
+                if (_notContent.Contains(e.Id))
+                    continue;
+                nClassify++;
+                var t0 = diag ? Stopwatch.GetTimestamp() : 0;
+                def = ContentCatalog.Classify(e);
+                if (diag) tClassify += Stopwatch.GetTimestamp() - t0;
+                if (def == null)
+                {
+                    _notContent.Add(e.Id);
+                    continue;
+                }
+                _defById[e.Id] = def;
+            }
 
             // Note the active ritual site (any co-located RitualRune* shares one fingerprint). The matching
             // sighting is created/bound below in the normal flow, so we resolve it from _known after the loop.
-            if (def.Type == "Ritual" && ContentCatalog.RitualState(e) == 2)
+            var ritualActive = false;
+            if (def.Type == "Ritual")
+            {
+                nRitualEnt++;
+                var t0 = diag ? Stopwatch.GetTimestamp() : 0;
+                ritualActive = ContentCatalog.RitualState(e) == 2;
+                if (diag) tRitual += Stopwatch.GetTimestamp() - t0;
+            }
+            if (ritualActive)
             {
                 var rp = e.GridPos;
                 activeRitualFp = ContentSighting.MakeFingerprint(def.Type, rp.X, rp.Y);
@@ -88,7 +123,10 @@ public class ContentTracker
             // Already tracking this exact entity: keep its first position, only upgrade terminal state.
             if (_byId.TryGetValue(e.Id, out var byId))
             {
+                nUpdate++;
+                var t0 = diag ? Stopwatch.GetTimestamp() : 0;
                 UpdateState(byId, def, e, elapsed, dirty);
+                if (diag) tUpdate += Stopwatch.GetTimestamp() - t0;
                 continue;
             }
 
@@ -103,7 +141,7 @@ public class ContentTracker
                 continue;
             }
 
-            // Genuinely new content instance — log it at this first-seen position.
+            // Genuinely new content instance - log it at this first-seen position.
             var s = new ContentSighting
             {
                 Type = def.Type,
@@ -126,12 +164,28 @@ public class ContentTracker
             dirty.Add(s);
         }
 
+        prof?.Begin("Content.tribute");
         AccumulateRitualTribute(activeRitualFp, readTribute);
+        prof?.End("Content.tribute");
 
         if (sawExpedition)
             ApplyExpedition(readExpedition, dirty);
 
+        prof?.Begin("Content.rewards");
         ApplyRitualRewards(readRitualRewards, dirty);
+        prof?.End("Content.rewards");
+
+        if (diag)
+        {
+            prof.Count("Content.ms classify", Ms(tClassify));
+            prof.Count("Content.ms ritualState", Ms(tRitual));
+            prof.Count("Content.ms updateState", Ms(tUpdate));
+            prof.Count("Content.n entities", nSeen);
+            prof.Count("Content.n classify", nClassify);
+            prof.Count("Content.n ritualEnt", nRitualEnt);
+            prof.Count("Content.n updState", nUpdate);
+            prof.Count("Content.n dirty", dirty.Count);
+        }
 
         return dirty;
     }
@@ -139,6 +193,8 @@ public class ContentTracker
     // Replicate the map-wide ritual favour union + reroll count onto every ritual sighting (favours are a
     // shared tribute pool, not per-site). The reader returns non-null only when something changed (a favour
     // offered/purchased or a reroll), so the touched sightings are queued for the disk upsert.
+    private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+
     private void ApplyRitualRewards(Func<RitualRewardState> readRitualRewards, List<ContentSighting> dirty)
     {
         var state = readRitualRewards?.Invoke();
@@ -199,7 +255,7 @@ public class ContentTracker
     }
 
     // Attribute the live HUD tribute's positive deltas to the active ritual site. Tribute is map-wide and
-    // accumulates as wave mobs die (it also drops when spent at the reward window — ignored here, we only add
+    // accumulates as wave mobs die (it also drops when spent at the reward window - ignored here, we only add
     // positive deltas). The running total mutates the sighting in memory; it's flushed to disk by the
     // completion edge (current_state -> 3) via UpdateState, so we don't write content.json every tick.
     private void AccumulateRitualTribute(string activeFp, Func<int?> readTribute)

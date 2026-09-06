@@ -70,6 +70,10 @@ public static class InstanceStore
     public static string StashFilePath(string pluginDirectory, string fileName)
         => Path.Combine(StashDir(pluginDirectory), fileName);
 
+    // atlas map vs everything else. the one place the "Map" prefix rule lives
+    public static bool IsMapAreaId(string areaId) =>
+        !string.IsNullOrEmpty(areaId) && areaId.StartsWith("Map", System.StringComparison.Ordinal);
+
     public static string Sanitize(string s)
     {
         foreach (var c in Path.GetInvalidFileNameChars())

@@ -1,14 +1,13 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using Newtonsoft.Json;
 
 namespace ExileStats;
 
 /// <summary>
 /// One logged map run: full area/template metadata, session/server context, gold/XP deltas, and the
-/// monster counts accumulated while in the area. Appended to map_monster_log.json when leaving a map
-/// back to the hideout. Group by <see cref="AreaId"/> (e.g. "MapReservoir") to collect data across
+/// monster counts accumulated while in the area. Appended to the instance run.json when leaving any
+/// tracked area. Group by <see cref="AreaId"/> (e.g. "MapReservoir") to collect data across
 /// multiple instances of the same map.
 /// </summary>
 public class MapRunRecord
@@ -117,26 +116,11 @@ public class MapRunRecord
 /// <see cref="InstanceStore"/> for the layout.</summary>
 public static class MapMonsterLog
 {
-    private static readonly object _lock = new();
-
     /// <summary>Reads the instance's run.json (if any), appends this visit's record, writes it back.</summary>
     public static void Append(string pluginDirectory, string areaId, long instanceHash, MapRunRecord record)
     {
         InstanceStore.EnsureFolder(pluginDirectory, areaId, instanceHash);
-        var path = InstanceStore.FilePath(pluginDirectory, areaId, instanceHash, InstanceStore.RunFile);
-        lock (_lock)
-        {
-            List<MapRunRecord> list = null;
-            if (File.Exists(path))
-            {
-                var json = File.ReadAllText(path);
-                if (!string.IsNullOrWhiteSpace(json))
-                    list = JsonConvert.DeserializeObject<List<MapRunRecord>>(json);
-            }
-
-            list ??= new List<MapRunRecord>();
-            list.Add(record);
-            File.WriteAllText(path, JsonConvert.SerializeObject(list, Formatting.Indented));
-        }
+        JsonArrayLog<MapRunRecord>.Append(
+            InstanceStore.FilePath(pluginDirectory, areaId, instanceHash, InstanceStore.RunFile), record);
     }
 }

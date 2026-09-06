@@ -1,49 +1,28 @@
 using System.Collections.Generic;
-using System.IO;
-using Newtonsoft.Json;
 
 namespace ExileStats;
 
-/// <summary>Reads/writes the per-instance path.json (a JSON array of <see cref="PathPoint"/>) under the
-/// instance folder. <see cref="PathTracker"/> buffers points in memory and flushes them here in batches, so
-/// the read-append-write happens occasionally rather than every sample.</summary>
+/// <summary>Reads/writes the per-instance path.json (JSON Lines, one <see cref="PathPoint"/> per line;
+/// legacy array files still read and are converted on first append) under the instance folder.
+/// <see cref="PathTracker"/> buffers points in memory and flushes them here in batches, so appending is a
+/// plain file append, not a read-modify-write.</summary>
 public static class PathLog
 {
-    private static readonly object _lock = new();
+    private static string P(string d, string a, long h) => InstanceStore.FilePath(d, a, h, InstanceStore.PathFile);
 
     /// <summary>Appends a batch of buffered path points to the instance's path.json.</summary>
-    public static void Append(string pluginDirectory, string areaId, long instanceHash,
-        IReadOnlyList<PathPoint> points)
+    public static void Append(string pluginDirectory, string areaId, long instanceHash, IReadOnlyList<PathPoint> points)
     {
-        if (points == null || points.Count == 0)
-            return;
-
+        if (points == null || points.Count == 0) return;
         InstanceStore.EnsureFolder(pluginDirectory, areaId, instanceHash);
-        var path = InstanceStore.FilePath(pluginDirectory, areaId, instanceHash, InstanceStore.PathFile);
-        lock (_lock)
-        {
-            var list = ReadList(path);
-            list.AddRange(points);
-            File.WriteAllText(path, JsonConvert.SerializeObject(list, Formatting.Indented));
-        }
+        JsonLinesLog<PathPoint>.Append(P(pluginDirectory, areaId, instanceHash), points);
     }
 
     /// <summary>All logged path points for an instance (empty if no file yet).</summary>
-    public static List<PathPoint> Read(string pluginDirectory, string areaId, long instanceHash)
-    {
-        var path = InstanceStore.FilePath(pluginDirectory, areaId, instanceHash, InstanceStore.PathFile);
-        lock (_lock)
-            return ReadList(path);
-    }
+    public static List<PathPoint> Read(string pluginDirectory, string areaId, long instanceHash) =>
+        JsonLinesLog<PathPoint>.Read(P(pluginDirectory, areaId, instanceHash));
 
-    private static List<PathPoint> ReadList(string path)
-    {
-        if (File.Exists(path))
-        {
-            var json = File.ReadAllText(path);
-            if (!string.IsNullOrWhiteSpace(json))
-                return JsonConvert.DeserializeObject<List<PathPoint>>(json) ?? new List<PathPoint>();
-        }
-        return new List<PathPoint>();
-    }
+    /// <summary>For readers that already hold the instance folder path (stats window, report).</summary>
+    public static List<PathPoint> ReadFolder(string folder) =>
+        JsonLinesLog<PathPoint>.Read(System.IO.Path.Combine(folder, InstanceStore.PathFile));
 }

@@ -30,7 +30,7 @@ public class SnapshotBuff
 public class Snapshot
 {
     public DateTime At { get; set; }
-    public double ElapsedSeconds { get; set; }   // since the visit's EnteredAt
+    public double ElapsedSeconds { get; set; }   // since this visit started, not the instance's first EnteredAt
     public int ZoneSwitchId { get; set; }
 
     // Player position on the map grid

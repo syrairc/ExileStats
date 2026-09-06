@@ -1,5 +1,3 @@
-using ExileCore2;
-
 namespace ExileStats;
 
 /// <summary>
@@ -8,17 +6,12 @@ namespace ExileStats;
 /// </summary>
 public readonly struct TrackerContext
 {
-    public readonly ExileStats Plugin;
-    public readonly GameController Gc;
     public readonly EntityBuckets Buckets;
     public readonly MapRunRecord Area;          // current area record (may be null when not in a tracked area)
     public readonly double ElapsedSeconds;      // since area entry (unrounded)
 
-    public TrackerContext(ExileStats plugin, GameController gc, EntityBuckets buckets,
-        MapRunRecord area, double elapsedSeconds)
+    public TrackerContext(EntityBuckets buckets, MapRunRecord area, double elapsedSeconds)
     {
-        Plugin = plugin;
-        Gc = gc;
         Buckets = buckets;
         Area = area;
         ElapsedSeconds = elapsedSeconds;

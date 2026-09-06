@@ -1,7 +1,9 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using ExileCore2;
 using ExileCore2.PoEMemory.Components;
+using ExileCore2.PoEMemory.Elements.InventoryElements;
 
 namespace ExileStats;
 
@@ -21,17 +23,18 @@ public class RitualRewardState
 /// <item>adds newly-seen favours to a union (so rerolled-away favours are still recorded),</item>
 /// <item>flags a favour <b>Purchased</b> when it leaves the window and a matching item Path appears in the
 /// main inventory (one removed + an inventory gain),</item>
-/// <item>counts a <b>reroll</b> when ≥2 favours leave at once with no inventory gain (the user's
+/// <item>counts a <b>reroll</b> when >=2 favours leave at once with no inventory gain (the user's
 /// "significant inventory change" heuristic).</item>
 /// </list>
 /// Favours are read via <see cref="ItemRecord.Read{T}"/> (same extraction + pricing as loot/stash). All reads
-/// are wrapped — never throws. Mirrors <see cref="PickupTracker"/>'s inventory-diff approach.
+/// are wrapped - never throws. Mirrors <see cref="PickupTracker"/>'s inventory-diff approach.
 /// </summary>
 public class RitualRewards
 {
     private readonly Dictionary<string, RitualReward> _union = new();  // favour key -> favour (union across rerolls)
     private int _rerolls;
     private HashSet<string> _prevKeys = new();                         // favour keys in the window last tick
+    private string _sig;                                               // cheap window signature, see Update
     private Dictionary<string, int> _invBaseline;                      // main-inventory Path -> count last tick
 
     /// <summary>Reset for a freshly-entered area; seed the union from an existing ritual sighting so re-entry
@@ -42,6 +45,7 @@ public class RitualRewards
         _rerolls = 0;
         _prevKeys = new HashSet<string>();
         _invBaseline = null;
+        _sig = null;
 
         var seed = known?.Values.FirstOrDefault(c => c.Type == "Ritual" && c.RitualFavours is { Count: > 0 });
         if (seed != null)
@@ -65,13 +69,26 @@ public class RitualRewards
             if (ui?.RitualWindow is not { IsVisible: true } window)
             {
                 _prevKeys = new HashSet<string>();
+                _sig = null;                  // reopening re-reads, which repopulates _prevKeys
                 _invBaseline = inv;
                 return null;
             }
 
+            var items = window.Items;
+
+            // Cheap identity of what's on offer. The full read below prices every favour through NinjaPricer,
+            // and each of those rebuilds a whole CustomItem from memory - far too slow to redo every tick for
+            // a set that only moves on a reroll or a purchase. Path + stack size is what Key() keys on.
+            var sig = Signature(items);
+            if (sig == _sig)
+            {
+                _invBaseline = inv;
+                return null;
+            }
+            _sig = sig;
+
             // Current favours offered in the window.
             var cur = new Dictionary<string, RitualReward>();
-            var items = window.Items;
             if (items != null)
             {
                 foreach (var nii in items)
@@ -130,15 +147,33 @@ public class RitualRewards
         }
     }
 
+    // Path + stack size of every favour on offer, in window order. Reads one component per item instead of
+    // the full priced record, so it's safe to run every tick.
+    private static string Signature(IEnumerable<NormalInventoryItem> items)
+    {
+        if (items == null)
+            return "";
+        var sb = new StringBuilder();
+        foreach (var nii in items)
+        {
+            var item = nii?.Item;
+            if (item is not { IsValid: true } || string.IsNullOrEmpty(item.Path))
+                continue;
+            sb.Append(item.Path);
+            if (item.TryGetComponent<Stack>(out var st))
+                sb.Append('|').Append(st.Size);
+            sb.Append(';');
+        }
+        return sb.ToString();
+    }
+
     // Main-inventory item count per path (stack-aware), to spot a favour landing in the bag.
     private static Dictionary<string, int> ReadInventoryCounts(GameController gc)
     {
         var d = new Dictionary<string, int>();
         try
         {
-            var holder = gc.IngameState.ServerData.PlayerInventories
-                ?.FirstOrDefault(h => h?.TypeId.ToString() == "MainInventory1");
-            var slots = holder?.Inventory?.InventorySlotItems;
+            var slots = InventoryScan.MainInventory(gc)?.InventorySlotItems;
             if (slots == null)
                 return d;
             foreach (var slot in slots)

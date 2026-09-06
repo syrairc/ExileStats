@@ -1,215 +1,338 @@
 using System;
 using ExileCore2;
-using ExileCore2.Shared.Helpers;
 using ExileCore2.Shared.Nodes;
+using ExileImGui;
 using ImGuiNET;
+// UseWindowsForms puts a global `Windows` namespace in scope, which shadows the ExileImGui class.
+using EWindows = ExileImGui.Windows;
 
 namespace ExileStats;
 
-// Custom settings UI for the plugin entry (partial of ExileStats). Split into its own file to keep the
-// hand-drawn ImGui settings screen separate from the per-Tick/area logic in ExileStats.cs.
+// Custom settings UI for the plugin entry (partial of ExileStats). The auto-generated [Menu] list was a flat,
+// out-of-order wall of ~60 controls, so the screen is hand-drawn: a tab bar over grouped cards, built on the
+// ExileImGui control kit (Controls / Card / Windows). base.DrawSettings() is intentionally NOT called -
+// persistence is the core serializing the Settings object, not the drawer's job.
 public partial class ExileStats
 {
-    // ExileCore calls this only while this plugin's settings page is open; timestamp it so Render can
-    // tell whether the config is currently visible.
-    // Custom settings UI: the auto-generated [Menu] list was a flat, out-of-order wall of ~35 controls, so
-    // we draw each node by hand (ImGui) grouped into collapsing-header categories. base.DrawSettings() is
-    // intentionally NOT called - persistence is handled by the core serializing the Settings object, not by
-    // the drawer. The Activity report moved to a tab in the Map Statistics window; layout validation stays.
+    // Slider width. Full-width sliders in a card look like progress bars; this keeps them readable.
+    private const float SliderW = 240f;
+
+    // ExileCore calls DrawSettings only while this plugin's settings page is open, so the timestamp doubles
+    // as "is the config visible" for the on-screen overlays.
     public override void DrawSettings()
     {
         _lastSettingsDraw = DateTime.Now;
 
+        using var _ = new Controls.PanelStyleScope();
+
         // Always-visible top row: master enable + the stats-window hotkey rebind.
-        Toggle(Settings.Enable, "Enable plugin");
+        Controls.Toggle("Enable plugin", "enable", Settings.Enable);
         ImGui.SameLine();
         if (Settings.OpenStatsKey.DrawPickerButton($"Open map statistics: {Settings.OpenStatsKey.Value}"))
             Input.RegisterKey(Settings.OpenStatsKey.Value);   // backstop; OnValueChanged also re-registers
 
         ImGui.Separator();
 
-        if (ImGui.CollapsingHeader("General", ImGuiTreeNodeFlags.DefaultOpen))
+        EWindows.TabBar("settings",
+            ("General", TabGeneral),
+            ("Overlay", TabOverlay),
+            ("Logging", TabLogging),
+            ("Map", TabMap),
+            ("Net worth", TabNetWorth),
+            ("Performance", TabPerformance),
+            ("Tools", TabTools));
+    }
+
+    // ---- Tabs ----
+
+    private bool TabGeneral()
+    {
+        bool d = false;
+        d |= Card.Draw("counter", "Monster counter", () =>
         {
-            Toggle(Settings.CountMonsters, "Count monsters",
+            bool c = T(Settings.CountMonsters, "Count monsters",
                 "Scan monsters each tick for the counter + per-map monster stats. Off stops the monster scan " +
                 "entirely (kept on automatically while you log runs or snapshots)");
-            Toggle(Settings.ShowCounter, "Show monster counter",
-                "Draw the on-screen monster tally (only in maps, or while this config is open)");
-            Toggle(Settings.SplitByRarity, "Split by rarity",
-                "Break the tally into White / Magic / Rare / Unique lines");
-            SliderInt(Settings.PositionX, "Counter X");
-            SliderInt(Settings.PositionY, "Counter Y");
-            ColorEdit(Settings.TextColor, "Counter text color");
-        }
+            c |= Controls.ToggleGrid("countergrid",
+            [
+                new Controls.ToggleItem("Show counter", Settings.ShowCounter,
+                    "Draw the on-screen monster tally (only in tracked areas, or while this config is open)"),
+                new Controls.ToggleItem("Split by rarity", Settings.SplitByRarity,
+                    "Break the tally into White / Magic / Rare / Unique lines"),
+            ]);
+            c |= SI(Settings.PositionX, "Counter X");
+            c |= SI(Settings.PositionY, "Counter Y");
+            c |= Controls.Color("Counter text color", "ctc", Settings.TextColor);
+            return c;
+        }).Changed;
 
-        if (ImGui.CollapsingHeader("Area logging"))
+        return d;
+    }
+
+    private bool TabOverlay()
+    {
+        bool d = T(Settings.ShowStatsOverlay, "Show statistics overlay",
+            "Draw the on-screen statistics panel (xp bar and the rate lines below)");
+        ImGui.SameLine();
+        d |= T(Settings.OverlayLocked, "Locked",
+            "Stop the panel being dragged. Unlock it to drag the body, and pull its right edge to resize");
+
+        d |= Card.Draw("ovlines", "Lines", () =>
         {
-            Toggle(Settings.LogToFile, "Log per-map counts to file",
-                "When you leave a map, append that map's stats to run.json in the map's instance folder under maps/");
-            Toggle(Settings.LogAllAreas, "Log all areas (not just maps)",
-                "Also track and log every non-town/non-hideout area you visit (campaign / act zones), each to its " +
-                "own instance folder under maps/. Off = maps only (the original behavior)");
-            SliderInt(Settings.MinTrackedAreaSeconds, "Min area duration (s)",
-                "When 'Log all areas' is on, skip non-map areas you left in under this many seconds OR with zero " +
+            bool c = Controls.ToggleGrid("ovlinegrid",
+            [
+                new Controls.ToggleItem("XP bar", Settings.OverlayShowXpBar,
+                    "Level progress bar at the top of the panel"),
+                new Controls.ToggleItem("XP / hour", Settings.OverlayShowXpHour,
+                    "Experience per hour over the averaging window"),
+                new Controls.ToggleItem("XP / map", Settings.OverlayShowXpMap,
+                    "Average experience per map over the averaging window"),
+                new Controls.ToggleItem("Maps / hour", Settings.OverlayShowMapsHour,
+                    "Maps completed per hour over the averaging window (town time included)"),
+                new Controls.ToggleItem("Value / hour", Settings.OverlayShowValueHour,
+                    "Worth of everything you looted per hour over the averaging window. Needs NinjaPricer"),
+                new Controls.ToggleItem("Value / map", Settings.OverlayShowValueMap,
+                    "Average worth of everything you looted per map over the averaging window. Needs NinjaPricer"),
+                new Controls.ToggleItem("Time to next level", Settings.OverlayShowTimeToLevel,
+                    "Projected time to the next character level at the current xp/hour"),
+                new Controls.ToggleItem("Maps to next level", Settings.OverlayShowMapsToLevel,
+                    "How many more maps the next level needs at the current xp/map"),
+                new Controls.ToggleItem("No-omen warning", Settings.OverlayShowOmenWarning,
+                    "Warn in red when no Omen of Amelioration is in your backpack and you are past the " +
+                    "threshold below - that omen is what cuts the map death xp penalty"),
+            ]);
+            c |= SI(Settings.OverlayAvgRuns, "Average over N maps",
+                "How many recent map runs the xp/map, maps/hour and xp/hour figures average over. A run = a " +
+                "map plus any sub-areas entered from it");
+            c |= SI(Settings.OverlayOmenThreshold, "Omen warning at %",
+                "Only warn about the missing omen once you are this far into the level");
+            return c;
+        }).Changed;
+
+        d |= Card.Draw("ovlook", "Placement and colors", () =>
+        {
+            bool c = SI(Settings.OverlayPositionX, "Overlay X", "Or just drag the panel while unlocked");
+            c |= SI(Settings.OverlayPositionY, "Overlay Y", "Or just drag the panel while unlocked");
+            c |= SI(Settings.OverlayWidth, "Overlay width", "Or drag the panel's right edge while unlocked");
+            c |= SF(Settings.OverlayScale, "Text scale", "Font scale of the overlay text and xp bar", "%.2f");
+            c |= Controls.ColorGrid("ovcolors",
+            [
+                new Controls.ColorItem("Text", () => Settings.OverlayTextColor.Value,
+                    v => Settings.OverlayTextColor.Value = v),
+                new Controls.ColorItem("Background", () => Settings.OverlayBgColor.Value,
+                    v => Settings.OverlayBgColor.Value = v),
+                new Controls.ColorItem("XP bar", () => Settings.OverlayBarColor.Value,
+                    v => Settings.OverlayBarColor.Value = v),
+                new Controls.ColorItem("Warning", () => Settings.OverlayWarnColor.Value,
+                    v => Settings.OverlayWarnColor.Value = v),
+            ]);
+            return c;
+        }).Changed;
+
+        return d;
+    }
+
+    private bool TabLogging()
+    {
+        bool d = Card.Draw("areas", "Areas", () =>
+        {
+            bool c = Controls.ToggleGrid("areagrid",
+            [
+                new Controls.ToggleItem("Log runs to file", Settings.LogToFile,
+                    "When you leave a tracked area, append its stats to run.json in the instance folder under maps/"),
+                new Controls.ToggleItem("Log all areas", Settings.LogAllAreas,
+                    "Also track every non-town/non-hideout area (campaign / act zones), not just atlas maps"),
+                new Controls.ToggleItem("Log map content", Settings.LogContent,
+                    "Detect content (ritual / breach / strongbox / essence / boss / ...) and record where + when " +
+                    "each appears, plus its opened/used state, to content.json"),
+                new Controls.ToggleItem("Log wisp encounters", Settings.LogWisps,
+                    "Track Tormented Spirit / Azmeri wisp encounters and mark the possessed rare on the map"),
+                new Controls.ToggleItem("Log deaths", Settings.LogDeaths,
+                    "Detect when your life hits 0 and append a death (position + nearby monsters) to deaths.json"),
+            ]);
+            c |= SI(Settings.MinTrackedAreaSeconds, "Min area duration (s)",
+                "With 'Log all areas' on, skip non-map areas you left in under this many seconds OR with zero " +
                 "monsters seen. Maps are always logged regardless");
-            Toggle(Settings.LogContent, "Log map content",
-                "While in a map, detect content (ritual / breach / strongbox / essence / boss / ...), record where + " +
-                "when each appears (and its opened/used state) to content.json, and draw its icon on the map");
-            Toggle(Settings.LogWisps, "Log wisp encounters",
-                "While in a map, track Tormented Spirit / Azmeri wisp encounters - count buffed monsters slain " +
-                "before the rare is possessed, and mark the possessed rare's location on the map");
-            Toggle(Settings.LogMonsterPositions, "Log monster positions",
-                "While in a map, record each distinct monster's first-seen grid position (at or above the min " +
-                "rarity below) to monsters.json. Needs 'Count monsters' on");
-            SliderInt(Settings.MonsterPositionMinRarity, "Monster position min rarity",
+            c |= SI(Settings.DeathNearbyRange, "Death nearby range",
+                "Grid distance to scan for hostile monsters around you when you die");
+            return c;
+        }).Changed;
+
+        d |= Card.Draw("monsterpos", "Monster positions", () =>
+        {
+            bool c = Controls.ToggleGrid("mpgrid",
+            [
+                new Controls.ToggleItem("Log positions", Settings.LogMonsterPositions,
+                    "Record each distinct monster's first-seen grid position to monsters.json. Needs 'Count monsters'"),
+                new Controls.ToggleItem("Detailed rows", Settings.MonsterPositionDetailed,
+                    "Include extra per-monster fields (type key, name, path). Off keeps rows slim"),
+            ]);
+            c |= SI(Settings.MonsterPositionMinRarity, "Min rarity",
                 "Lowest rarity to log: 0=White 1=Magic 2=Rare 3=Unique. Higher = far fewer rows (Rare+Unique " +
                 "is a handful per map; White logs hundreds)");
-            Toggle(Settings.MonsterPositionDetailed, "Monster positions: detailed",
-                "Include extra per-monster fields (type key, name, path). Off keeps rows slim");
-            Toggle(Settings.LogDeaths, "Log deaths",
-                "While in a map, detect when your life hits 0 and append a death (position + nearby monsters) to " +
-                "deaths.json in the map's instance folder");
-            SliderInt(Settings.DeathNearbyRange, "Death nearby range",
-                "Grid distance to scan for hostile monsters around you when you die");
-        }
+            return c;
+        }).Changed;
 
-        if (ImGui.CollapsingHeader("Loot & snapshots"))
-        {
-            Toggle(Settings.LogLoot, "Log ground loot",
-                "While in a map, record ground loot (deduped by position) to loot.json in the map's instance folder");
-            Toggle(Settings.LogPickups, "Log looted items",
-                "While in a map, detect items looted into your backpack (incl. stack growth) and record them to " +
-                "pickups.json in the map's instance folder");
-            ImGui.Spacing();
-            Toggle(Settings.LogSnapshots, "Log periodic snapshots",
-                "While in a map, append a timestamped snapshot (position, vitals, XP/gold, monster count) to " +
-                "snapshots.json in the map's instance folder");
-            SliderInt(Settings.SnapshotIntervalSeconds, "Snapshot interval (s)",
-                "Seconds between periodic snapshots");
-            Toggle(Settings.SnapshotStats, "Snapshot player stats",
-                "Include the full Player.Stats sheet (~360 values) in each snapshot. Off shrinks snapshots.json");
-            Toggle(Settings.SnapshotBuffs, "Snapshot player buffs",
-                "Include active player buffs (name, stacks, remaining time) in each snapshot");
-            ImGui.Spacing();
-            Toggle(Settings.LogPath, "Log player path",
-                "While in a map, record the player position at a high rate to path.json for an accurate map path " +
-                "(separate from, and denser than, snapshots)");
-            SliderInt(Settings.PathStepUnits, "Path step (grid units)",
-                "Record a path point each time the player moves this many grid units - keeps the path evenly " +
-                "dense in fast-traversed corridors, not just slow rooms");
-            SliderInt(Settings.PathIntervalMs, "Path min interval (ms)",
-                "Minimum milliseconds between path points (anti-spam floor; the spacing is set by Path step)");
-        }
+        d |= Card.Draw("loot", "Loot", () =>
+            Controls.ToggleGrid("lootgrid",
+            [
+                new Controls.ToggleItem("Log ground loot", Settings.LogLoot,
+                    "Record ground loot (deduped by position) to loot.json in the map's instance folder"),
+                new Controls.ToggleItem("Log looted items", Settings.LogPickups,
+                    "Record items looted into your backpack (incl. stack growth) to pickups.json"),
+            ])).Changed;
 
-        if (ImGui.CollapsingHeader("Map image"))
+        d |= Card.Draw("snap", "Snapshots and path", () =>
         {
-            Toggle(Settings.SaveMapImage, "Save map image",
-                "When you enter a map, ask the Radar plugin for an image of the map and save it to the maps/ folder");
-            SliderInt(Settings.MapImageDelaySeconds, "Map image delay (s)",
-                "Seconds to wait after entering a map before grabbing the image, so the area has finished loading " +
-                "and Radar has explored it");
-            Toggle(Settings.MapImageOverlay, "Map target overlay",
-                "Include Radar's routes/targets overlay in the saved image");
-        }
+            bool c = Controls.ToggleGrid("snapgrid",
+            [
+                new Controls.ToggleItem("Periodic snapshots", Settings.LogSnapshots,
+                    "Append a timestamped snapshot (position, vitals, XP/gold, monster count) to snapshots.json"),
+                new Controls.ToggleItem("Include player stats", Settings.SnapshotStats,
+                    "Include the full Player.Stats sheet (~360 values) in each snapshot. Off shrinks the file"),
+                new Controls.ToggleItem("Include buffs", Settings.SnapshotBuffs,
+                    "Include active player buffs (name, stacks, remaining time) in each snapshot"),
+                new Controls.ToggleItem("Log player path", Settings.LogPath,
+                    "Record the player position at a high rate to path.json (denser than snapshots)"),
+            ]);
+            c |= SI(Settings.SnapshotIntervalSeconds, "Snapshot interval (s)", "Seconds between snapshots");
+            c |= SI(Settings.PathStepUnits, "Path step (grid units)",
+                "Record a path point each time you move this many grid units - keeps the path evenly dense in " +
+                "fast-traversed corridors, not just slow rooms");
+            c |= SI(Settings.PathIntervalMs, "Path min interval (ms)",
+                "Minimum milliseconds between path points (anti-spam floor; spacing is set by Path step)");
+            return c;
+        }).Changed;
 
-        if (ImGui.CollapsingHeader("Exploration"))
-        {
-            Toggle(Settings.LogExploration, "Log map exploration %",
-                "At map end, compute how much of the walkable map (from map.svg) was explored within the reveal " +
-                "radii below, and the density area. Stored on run.json");
-            SliderFloat(Settings.MapRevealRadius, "Map reveal radius",
-                "How far terrain is uncovered around you - drives exploration % and the map-view tint. Tune live " +
-                "so the tint matches what you actually walked");
-            SliderFloat(Settings.MonsterRevealRadius, "Monster reveal radius",
-                "Wider radius at which monsters appear around you (~2x terrain reveal). Density = monsters / the " +
-                "walkable area within this radius of your path");
-            Toggle(Settings.ShowExploredTint, "Show explored tint",
-                "Shade the explored area (reveal radius within walkable along your path) on the Map Statistics map view");
-            ColorEdit(Settings.ExploredTintColor, "Explored tint color",
-                "Color + opacity of the explored-area shading on the map view (alpha = opacity)");
-        }
+        return d;
+    }
 
-        if (ImGui.CollapsingHeader("Net worth"))
+    private bool TabMap()
+    {
+        bool d = Card.Draw("mapimg", "Map image", () =>
         {
-            Toggle(Settings.TrackNetWorth, "Track stash net worth",
-                "While the stash panel is open, scan every loaded stash tab (and the backpack) and log your net " +
-                "worth to the stash/ folder. Only tabs you've opened this session are in memory and can be read");
-            Toggle(Settings.NetWorthIncludeInventory, "Include backpack",
-                "Include your main inventory items in the net-worth total (logged as the 'Inventory' tab)");
-            SliderInt(Settings.NetWorthIntervalSeconds, "Net worth log interval (s)",
+            bool c = Controls.ToggleGrid("mapimggrid",
+            [
+                new Controls.ToggleItem("Save map image", Settings.SaveMapImage,
+                    "On area entry, ask the Radar plugin for the map (svg, else png) and save it under maps/"),
+                new Controls.ToggleItem("Include target overlay", Settings.MapImageOverlay,
+                    "Include Radar's routes/targets overlay in the saved image"),
+            ]);
+            c |= SI(Settings.MapImageDelaySeconds, "Capture delay (s)",
+                "Seconds to wait after entering before grabbing the image, so the area has loaded and Radar " +
+                "has explored it");
+            return c;
+        }).Changed;
+
+        d |= Card.Draw("explore", "Exploration", () =>
+        {
+            bool c = Controls.ToggleGrid("expgrid",
+            [
+                new Controls.ToggleItem("Log exploration %", Settings.LogExploration,
+                    "At area end, compute how much of the walkable map (from map.svg) was explored within the " +
+                    "reveal radii below. Stored on run.json"),
+                new Controls.ToggleItem("Show explored tint", Settings.ShowExploredTint,
+                    "Shade the explored area on the Map Statistics map view"),
+            ]);
+            c |= SF(Settings.MapRevealRadius, "Map reveal radius",
+                "How far terrain is uncovered around you - drives exploration % and the map-view tint. Tune " +
+                "live so the tint matches what you actually walked");
+            c |= SF(Settings.MonsterRevealRadius, "Monster reveal radius",
+                "Wider radius at which monsters appear (~2x terrain reveal). Density = monsters / the walkable " +
+                "area within this radius of your path");
+            c |= Controls.Color("Explored tint color", "etc", Settings.ExploredTintColor);
+            Controls.Tip("Color + opacity of the explored-area shading on the map view (alpha = opacity)");
+            return c;
+        }).Changed;
+
+        return d;
+    }
+
+    private bool TabNetWorth()
+    {
+        return Card.Draw("networth", "Stash net worth", () =>
+        {
+            bool c = Controls.ToggleGrid("nwgrid",
+            [
+                new Controls.ToggleItem("Track net worth", Settings.TrackNetWorth,
+                    "While the stash panel is open, scan every loaded stash tab (and the backpack) and log your " +
+                    "net worth to the stash/ folder. Only tabs opened this session are in memory"),
+                new Controls.ToggleItem("Include backpack", Settings.NetWorthIncludeInventory,
+                    "Include your main inventory items in the total (logged as the 'Inventory' tab)"),
+                new Controls.ToggleItem("Show readout", Settings.ShowNetWorthReadout,
+                    "Draw a net-worth readout (exalts + divines) while the stash panel is open"),
+            ]);
+            c |= SI(Settings.NetWorthIntervalSeconds, "Log interval (s)",
                 "Seconds between net-worth snapshots written to stash/networth.json while the stash is open");
-            Toggle(Settings.ShowNetWorthReadout, "Show net worth on screen",
-                "Draw a net-worth readout (exalts + divines) while the stash panel is open");
-            SliderInt(Settings.NetWorthPositionX, "Readout X",
-                "Screen X of the net-worth readout (keep clear of the left-side stash panel)");
-            SliderInt(Settings.NetWorthPositionY, "Readout Y",
-                "Screen Y of the net-worth readout");
-        }
+            c |= SI(Settings.NetWorthPositionX, "Readout X",
+                "Screen X of the readout (keep clear of the left-side stash panel)");
+            c |= SI(Settings.NetWorthPositionY, "Readout Y", "Screen Y of the readout");
+            return c;
+        }).Changed;
+    }
 
-        if (ImGui.CollapsingHeader("Performance"))
+    private bool TabPerformance()
+    {
+        bool d = Card.Draw("throttle", "Per-tick scan throttles", () =>
         {
-            ImGui.TextDisabled("Per-tick scan throttles (ms; 0 = every tick - no change).");
-            SliderInt(Settings.LootScanIntervalMs, "Loot scan interval (ms)",
-                "Minimum ms between ground-loot scans. Loot is deduped, so higher just delays logging slightly");
-            SliderInt(Settings.ContentScanIntervalMs, "Content scan interval (ms)",
-                "Minimum ms between map-content scans (deduped - higher just delays detection slightly)");
-            SliderInt(Settings.WispScanIntervalMs, "Wisp scan interval (ms)",
-                "Minimum ms between wisp-encounter scans");
-            SliderInt(Settings.PickupScanIntervalMs, "Pickup scan interval (ms)",
-                "Minimum ms between backpack pickup scans");
-            ImGui.Spacing();
-            Toggle(Settings.EnableProfiler, "Profile tracker performance",
-                "Time each per-tick tracker; view it in the Map Statistics 'Performance' tab. Tiny overhead");
-            Toggle(Settings.ShowProfiler, "Show profiler overlay",
-                "Draw the per-tracker timing overlay on screen (needs profiling on)");
-            SliderInt(Settings.ProfilerPositionX, "Profiler overlay X",
-                "Screen X of the per-tracker timing overlay");
-            SliderInt(Settings.ProfilerPositionY, "Profiler overlay Y",
-                "Screen Y of the per-tracker timing overlay");
-        }
+            ImGui.TextDisabled("Minimum ms between scans; 0 = every tick (no change).");
+            bool c = SI(Settings.LootScanIntervalMs, "Loot scan (ms)",
+                "Loot is deduped, so a higher value just delays logging slightly");
+            c |= SI(Settings.ContentScanIntervalMs, "Content scan (ms)",
+                "Content is deduped, so a higher value just delays detection slightly");
+            c |= SI(Settings.WispScanIntervalMs, "Wisp scan (ms)");
+            c |= SI(Settings.PickupScanIntervalMs, "Pickup scan (ms)");
+            return c;
+        }).Changed;
 
+        d |= Card.Draw("profiler", "Profiler", () =>
+        {
+            bool c = Controls.ToggleGrid("profgrid",
+            [
+                new Controls.ToggleItem("Profile trackers", Settings.EnableProfiler,
+                    "Time each per-tick tracker; view it in the Map Statistics 'Performance' tab. Tiny overhead"),
+                new Controls.ToggleItem("Show overlay", Settings.ShowProfiler,
+                    "Draw the per-tracker timing overlay on screen (needs profiling on)"),
+            ]);
+            c |= SI(Settings.ProfilerPositionX, "Overlay X");
+            c |= SI(Settings.ProfilerPositionY, "Overlay Y");
+            return c;
+        }).Changed;
+
+        return d;
+    }
+
+    private bool TabTools()
+    {
+        DrawDashboardTool();
         DrawLayoutValidation();
+        return false;
     }
 
-    // ---- Custom settings node helpers ----
-    // Each binds an ImGui control to a settings node (read .Value -> draw -> write back on change) and shows
-    // the node's help text as a hover tooltip. ColorEdit is named to avoid clashing with System.Drawing.Color.
+    // ---- Node helpers ----
+    // Thin wrappers over the ExileImGui controls that add the node's help text as a hover tooltip and pin a
+    // sane slider width. The label doubles as the ImGui id (unique within its card).
 
-    private static void Toggle(ToggleNode n, string label, string tip = null)
+    private static bool T(ToggleNode n, string label, string tip = null)
     {
-        var v = n.Value;
-        if (ImGui.Checkbox(label, ref v)) n.Value = v;
-        Tip(tip);
+        var c = Controls.Toggle(label, label, n);
+        Controls.Tip(tip);
+        return c;
     }
 
-    private static void SliderInt(RangeNode<int> n, string label, string tip = null)
+    private static bool SI(RangeNode<int> n, string label, string tip = null)
     {
-        var v = n.Value;
-        ImGui.SetNextItemWidth(220);
-        if (ImGui.SliderInt(label, ref v, n.Min, n.Max)) n.Value = v;
-        Tip(tip);
+        ImGui.SetNextItemWidth(SliderW);
+        var c = Controls.SliderInt(label, label, n);
+        Controls.Tip(tip);
+        return c;
     }
 
-    private static void SliderFloat(RangeNode<float> n, string label, string tip = null)
+    private static bool SF(RangeNode<float> n, string label, string tip = null, string fmt = "%.1f")
     {
-        var v = n.Value;
-        ImGui.SetNextItemWidth(220);
-        if (ImGui.SliderFloat(label, ref v, n.Min, n.Max)) n.Value = v;
-        Tip(tip);
-    }
-
-    private static void ColorEdit(ColorNode n, string label, string tip = null)
-    {
-        var c = n.Value.ToImguiVec4();
-        if (ImGui.ColorEdit4(label, ref c, ImGuiColorEditFlags.AlphaBar |
-                ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.AlphaPreviewHalf))
-            n.Value = c.ToColor();
-        Tip(tip);
-    }
-
-    private static void Tip(string tip)
-    {
-        if (!string.IsNullOrEmpty(tip) && ImGui.IsItemHovered())
-            ImGui.SetTooltip(tip);
+        ImGui.SetNextItemWidth(SliderW);
+        var c = Controls.SliderFloat(label, label, n, fmt);
+        Controls.Tip(tip);
+        return c;
     }
 }

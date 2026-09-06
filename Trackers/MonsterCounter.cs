@@ -95,22 +95,23 @@ public class MonsterCounter
 
         foreach (var e in entities)
         {
-            if (e is not { Type: EntityType.Monster, IsHostile: true })
+            if (e is not { IsHostile: true })
                 continue;
+            var rarity = e.Rarity;
+            if (!_seenByRarity.ContainsKey(rarity))
+                continue; // only the four real rarities
             if (e.HasComponent<DiesAfterTime>())
                 continue;
-            if (!_seenByRarity.ContainsKey(e.Rarity))
-                continue; // only the four real rarities
 
             if (_seenIds.Add(e.Id)) // first time we've seen this entity this area
             {
-                _seenByRarity[e.Rarity]++;
+                _seenByRarity[rarity]++;
 
                 var key = TypeKey(e.Path);
                 if (key.Length > 0)
                     _seenByType[key] = _seenByType.GetValueOrDefault(key) + 1;
 
-                if (e.Rarity == MonsterRarity.Unique)
+                if (rarity == MonsterRarity.Unique)
                 {
                     var name = e.RenderName;
                     if (!string.IsNullOrEmpty(name))
@@ -118,7 +119,7 @@ public class MonsterCounter
                 }
 
                 // Log this monster's first-seen position (deduped by fingerprint across visits).
-                if (_logPositions && Array.IndexOf(Rarities, e.Rarity) >= _minRarityIndex)
+                if (_logPositions && Array.IndexOf(Rarities, rarity) >= _minRarityIndex)
                 {
                     var p = e.GridPos;
                     var fp = MonsterSighting.MakeFingerprint(e.Path, p.X, p.Y);
@@ -126,7 +127,7 @@ public class MonsterCounter
                     {
                         var s = new MonsterSighting
                         {
-                            Rarity = e.Rarity.ToString(),
+                            Rarity = rarity.ToString(),
                             GridX = p.X,
                             GridY = p.Y,
                             FirstSeenAt = DateTime.Now,
@@ -146,7 +147,7 @@ public class MonsterCounter
             }
 
             if (e.IsAlive)
-                _alive[e.Rarity]++;
+                _alive[rarity]++;
         }
 
         _aliveTotal = _alive[MonsterRarity.White] + _alive[MonsterRarity.Magic]

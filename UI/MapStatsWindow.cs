@@ -34,6 +34,15 @@ public class MapStatsWindow
     private LootItem _selectedLoot;           // loot row clicked -> marked on the map
     private List<PickupItem> _pickups = new();
     private PickupItem _selectedPickup;       // pickup row clicked -> marked on the map (at pickup position)
+
+    // rows prepared once per selection / filter change. label + color + category, sorted by value
+    private sealed class ItemRow { public ItemRecord Item; public string Label; public string Category; public Vector4 Color; }
+    private readonly List<ItemRow> _lootRows = new();
+    private readonly List<ItemRow> _pickupRows = new();
+    private readonly List<string> _categories = new();
+    private readonly List<ItemRow> _lootShown = new();
+    private readonly List<ItemRow> _pickupShown = new();
+    private string _shownFilter;   // filter the *_Shown lists were built for
     private List<ContentSighting> _content = new();   // map content (ritual/breach/strongbox/…) for the visit
     private bool _showContent = true;          // draw content icons on the map
     private float _contentIconSize = 20f;      // content icon pixel size in the pane
@@ -57,11 +66,19 @@ public class MapStatsWindow
     private bool _mapMissing;                // selected run has neither svg nor png
     private float _mapZoom = 1f;             // user zoom (1 = fit-to-pane)
     private Vector2 _mapPan;                 // image top-left offset within the pane (screen px)
-    private Vector2[] _scratch = new Vector2[64];  // reusable screen-point buffer for polylines
+    // screen-space copies of the terrain loops / routes / path, rebuilt only when the transform changes
+    private Vector2 _cacheImgPos = new(float.NaN, float.NaN);
+    private Vector2 _cacheSize;
+    private readonly List<Vector2[]> _screenLoops = new();
+    private readonly List<(Vector2[] pts, uint color)> _screenRoutes = new();
+    private readonly List<Vector2[]> _screenPath = new();   // one polyline per non-teleport segment
+    private Vector2[] _pathGrid = Array.Empty<Vector2>();
+    private float _jumpSq;
     // Explored-area tint: row-merged rectangles (grid units, min/max) of the bubble∩walkable cells this
     // run covered. Computed once per selected run; drawn under the path overlay (toggle/color in settings).
     private readonly List<(Vector2 min, Vector2 max)> _exploredRects = new();
     private float _exploredRectsRadius = -1f;   // reveal radius the rects were built at (rebuild on change)
+    private long _exploredDirtySince;           // tick the radius started drifting from _exploredRectsRadius, 0 = settled
     private double? _exploredLivePercent;        // explored% recomputed live at the current reveal radius
 
     // One area visit within a run (instance folder + which visit). Record loaded lazily on select.
@@ -103,6 +120,7 @@ public class MapStatsWindow
     private int _batchAgeDays = 7;     // age threshold last selected in the cleanup popup
     private int _batchAgeIndex = 1;    // combo index: 0=1d 1=7d 2=14d 3=30d 4=60d 5=90d
     private string _exportStatus;      // status/error for the "Export to HTML" button in DrawDetail
+    private string _cleanupStatus;     // status/error for archive/unarchive/purge, shown next to the run list
     private string _pluginDirectory;   // cached for archive/purge ops
 
     private Graphics _graphics;
@@ -113,13 +131,35 @@ public class MapStatsWindow
     private string _lastReportPath;
     private string _reportStatus;
 
+    private int _lastDrawFrame = -10;   // frame this window last drew; a gap means it was just reopened
+
+    // run + area selected before a reopen reload, so the pick can come back once the list reloads
+    private HashSet<(string folder, int zsid)> _pendingRestoreRunKeys;
+    private (string folder, int zsid)? _pendingRestoreAreaKey;
+
     public void Draw(Graphics graphics, string pluginDirectory, ExileStatsSettings settings,
-        GameController gameController, TrackerProfiler profiler, ref bool open)
+        GameController gameController, double divRate, TrackerProfiler profiler, ref bool open)
     {
         _graphics = graphics;
         _settings = settings;
         _pluginDirectory = pluginDirectory;
-        _divRate = ItemPricer.GetDivineRate(gameController) ?? 0;   // drives FmtCur ex/div display (5-div rule)
+        _divRate = divRate;   // drives FmtCur ex/div display (5-div rule); owned by the plugin's Slow tracker
+
+        // draw only runs while open, so a gap in the frame counter means the window was just reopened
+        var frame = ImGui.GetFrameCount();
+        if (frame > _lastDrawFrame + 1)
+        {
+            // stash the current pick before Refresh wipes it, so it can come back after the reload
+            if (_selected != null)
+            {
+                _pendingRestoreRunKeys = RunGroupKeys(_selected);
+                _pendingRestoreAreaKey = _selectedArea != null
+                    ? (Path.GetFileName(_selectedArea.Folder), _selectedArea.ZoneSwitchId)
+                    : null;
+            }
+            _runs = null;
+        }
+        _lastDrawFrame = frame;
 
         if (!ImGui.Begin("Map Statistics", ref open))
         {
@@ -199,7 +239,10 @@ public class MapStatsWindow
     private void DrawRunsTab(string pluginDirectory)
     {
         if (_runs == null)
+        {
             Refresh(pluginDirectory);
+            RestorePendingSelection();
+        }
 
         if (ImGui.Button("Refresh"))
             Refresh(pluginDirectory);
@@ -211,7 +254,15 @@ public class MapStatsWindow
         ImGui.SameLine();
         bool openCleanupPopup = false;
         if (ImGui.Button("Cleanup..."))
+        {
             openCleanupPopup = true;
+            _cleanupStatus = null;
+        }
+        if (!string.IsNullOrEmpty(_cleanupStatus))
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled(_cleanupStatus);
+        }
 
         ImGui.Separator();
 
@@ -399,14 +450,12 @@ public class MapStatsWindow
                 .ToList();
             var opts = new ReportOptions
             {
-                ShowMonstersOnMaps  = _settings?.ReportShowMonsters.Value ?? false,
-                ShowPathOnMaps      = _settings?.ReportShowPath.Value ?? false,
-                ShowExploredOnMaps  = _settings?.ReportShowExplored.Value ?? false,
-                RevealRadius        = _settings?.MapRevealRadius.Value ?? 0f,
-                ExploredTintHex     = _settings != null
-                    ? $"#{_settings.ExploredTintColor.Value.R:X2}{_settings.ExploredTintColor.Value.G:X2}{_settings.ExploredTintColor.Value.B:X2}"
-                    : "#00C800",
-                ExploredTintOpacity = _settings != null ? _settings.ExploredTintColor.Value.A / 255.0 : 0.25,
+                ShowMonstersOnMaps  = _settings.ReportShowMonsters.Value,
+                ShowPathOnMaps      = _settings.ReportShowPath.Value,
+                ShowExploredOnMaps  = _settings.ReportShowExplored.Value,
+                RevealRadius        = _settings.MapRevealRadius.Value,
+                ExploredTintHex     = ContentCatalog.ToHex(_settings.ExploredTintColor.Value),
+                ExploredTintOpacity = _settings.ExploredTintColor.Value.A / 255.0,
             };
             var path = ActivityReportGenerator.GenerateRunReport(
                 _pluginDirectory, areas, grp.Headline.AreaName, _divRate, opts);
@@ -423,65 +472,80 @@ public class MapStatsWindow
     }
 
     // Archive all runs whose latest log time is before the cutoff.
-    private void BatchArchiveOldRuns(DateTime cutoff)
-    {
-        var toArchive = _runs.Where(g => g.LoggedAt < cutoff && !g.Archived).ToList();
-        foreach (var grp in toArchive)
-            SetRunArchived(grp, true);
-    }
+    private void BatchArchiveOldRuns(DateTime cutoff) =>
+        SetRunsArchived(_runs.Where(g => g.LoggedAt < cutoff && !g.Archived).ToList(), true);
 
     // Delete all files for runs whose latest log time is before the cutoff.
-    private void BatchPurgeOldRuns(DateTime cutoff)
-    {
-        var toPurge = _runs.Where(g => g.LoggedAt < cutoff).ToList();
-        foreach (var grp in toPurge)
-            PurgeRunGroup(grp);
-    }
+    private void BatchPurgeOldRuns(DateTime cutoff) =>
+        PurgeRunGroups(_runs.Where(g => g.LoggedAt < cutoff).ToList());
 
-    // Mark all index entries for this run group as archived (or unarchived).
-    private void SetRunArchived(RunGroup grp, bool archived)
+    private void SetRunArchived(RunGroup grp, bool archived) => SetRunsArchived(new List<RunGroup> { grp }, archived);
+    private void PurgeRunGroup(RunGroup grp) => PurgeRunGroups(new List<RunGroup> { grp });
+
+    // one index read-modify-write for the whole batch, guarded so a bad index can't throw out of Render
+    private void SetRunsArchived(List<RunGroup> groups, bool archived)
     {
-        var keys = RunGroupKeys(grp);
-        RunIndex.Modify(_pluginDirectory, list =>
+        if (groups.Count == 0) return;
+        var keys = new HashSet<(string folder, int zsid)>();
+        foreach (var g in groups) keys.UnionWith(RunGroupKeys(g));
+        try
         {
-            foreach (var e in list)
-                if (keys.Contains((e.Folder, e.ZoneSwitchId)))
-                    e.Archived = archived;
-        });
-        grp.Archived = archived;
-        foreach (var a in grp.Areas)
-            a.Archived = archived;
+            RunIndex.Modify(_pluginDirectory, list =>
+            {
+                foreach (var e in list)
+                    if (keys.Contains((e.Folder, e.ZoneSwitchId)))
+                        e.Archived = archived;
+            });
+        }
+        catch (Exception ex)
+        {
+            _cleanupStatus = (archived ? "Archive failed: " : "Unarchive failed: ") + ex.Message;
+            return;
+        }
+        _cleanupStatus = null;
+        foreach (var g in groups)
+        {
+            g.Archived = archived;
+            foreach (var a in g.Areas) a.Archived = archived;
+        }
     }
 
-    // Remove all index entries for this run group; delete any instance folders no longer referenced.
-    private void PurgeRunGroup(RunGroup grp)
+    // one index read-modify-write for the whole batch, guarded so a bad index can't throw out of Render
+    private void PurgeRunGroups(List<RunGroup> groups)
     {
-        var keys = RunGroupKeys(grp);
+        if (groups.Count == 0) return;
+        var keys = new HashSet<(string folder, int zsid)>();
+        foreach (var g in groups) keys.UnionWith(RunGroupKeys(g));
         var root = Path.Combine(_pluginDirectory, InstanceStore.RootFolder);
         List<string> foldersToDelete = null;
-        RunIndex.Modify(_pluginDirectory, list =>
+        try
         {
-            list.RemoveAll(e => keys.Contains((e.Folder, e.ZoneSwitchId)));
-            var stillReferenced = list.Select(e => e.Folder).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foldersToDelete = keys.Select(k => k.folder).Distinct()
-                .Where(f => !stillReferenced.Contains(f))
-                .ToList();
-        });
-        if (foldersToDelete != null)
-        {
-            foreach (var f in foldersToDelete)
+            RunIndex.Modify(_pluginDirectory, list =>
             {
-                var fullPath = Path.Combine(root, f);
-                if (Directory.Exists(fullPath))
-                    try { Directory.Delete(fullPath, recursive: true); } catch { /* best-effort */ }
-            }
+                list.RemoveAll(e => keys.Contains((e.Folder, e.ZoneSwitchId)));
+                var stillReferenced = list.Select(e => e.Folder).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foldersToDelete = keys.Select(k => k.folder).Distinct()
+                    .Where(f => !stillReferenced.Contains(f))
+                    .ToList();
+            });
         }
-        if (ReferenceEquals(grp, _selected))
+        catch (Exception ex)
         {
-            _selected = null;
-            _selectedArea = null;
+            _cleanupStatus = "Purge failed: " + ex.Message;
+            return;
         }
-        _runs.Remove(grp);
+        _cleanupStatus = null;
+        foreach (var f in foldersToDelete ?? new List<string>())
+        {
+            var fullPath = Path.Combine(root, f);
+            if (Directory.Exists(fullPath))
+                try { Directory.Delete(fullPath, recursive: true); } catch { /* best-effort */ }
+        }
+        foreach (var g in groups)
+        {
+            if (ReferenceEquals(g, _selected)) { _selected = null; _selectedArea = null; }
+            _runs.Remove(g);
+        }
     }
 
     private static HashSet<(string folder, int zsid)> RunGroupKeys(RunGroup grp) =>
@@ -558,7 +622,7 @@ public class MapStatsWindow
         {
             try
             {
-                var divineRate = ItemPricer.GetDivineRate(gameController) ?? 0;
+                var divineRate = _divRate;
                 var opts = new ReportOptions
                 {
                     ShowNetWorth        = _settings.ReportShowNetWorth.Value,
@@ -575,7 +639,7 @@ public class MapStatsWindow
                     ShowPathOnMaps      = _settings.ReportShowPath.Value,
                     ShowExploredOnMaps  = _settings.ReportShowExplored.Value,
                     RevealRadius        = _settings.MapRevealRadius.Value,
-                    ExploredTintHex     = $"#{_settings.ExploredTintColor.Value.R:X2}{_settings.ExploredTintColor.Value.G:X2}{_settings.ExploredTintColor.Value.B:X2}",
+                    ExploredTintHex     = ContentCatalog.ToHex(_settings.ExploredTintColor.Value),
                     ExploredTintOpacity = _settings.ExploredTintColor.Value.A / 255.0,
                     TopItemsCount       = _settings.ReportTopItemsCount.Value,
                     TopRunsCount        = _settings.ReportTopRunsCount.Value,
@@ -689,7 +753,7 @@ public class MapStatsWindow
                     Folder = folder,
                     ZoneSwitchId = v.ZoneSwitchId,
                     RunId = v.RunId,
-                    IsMapArea = !string.IsNullOrEmpty(v.AreaId) && v.AreaId.StartsWith("Map", StringComparison.Ordinal),
+                    IsMapArea = InstanceStore.IsMapAreaId(v.AreaId),
                     AreaName = name,
                     LoggedAt = v.LoggedAt,
                     Record = v,
@@ -700,37 +764,49 @@ public class MapStatsWindow
         _runs = GroupEntries(entries);
     }
 
-    // Group area visits into runs by RunId (0 / legacy data = its own solo run). Members ordered oldest-first;
-    // headline = the atlas-map area (else the first). Newest run first.
+    // Group area visits into runs via RunGrouping (0 / legacy data = its own solo run). Newest run first.
     private static List<RunGroup> GroupEntries(List<RunEntry> entries)
     {
-        var byKey = new Dictionary<string, RunGroup>();
         var order = new List<RunGroup>();
-        foreach (var e in entries)
+        foreach (var members in RunGrouping.Group(entries, e => e.RunId, e => e.Folder, e => e.ZoneSwitchId, e => e.LoggedAt))
         {
-            var key = e.RunId != 0 ? "run:" + e.RunId : "solo:" + e.Folder + ":" + e.ZoneSwitchId;
-            if (!byKey.TryGetValue(key, out var grp))
-            {
-                grp = new RunGroup { RunId = e.RunId };
-                byKey[key] = grp;
-                order.Add(grp);
-            }
-            grp.Areas.Add(e);
-        }
-
-        foreach (var grp in order)
-        {
-            grp.Areas = grp.Areas.OrderBy(a => a.LoggedAt).ToList();
-            grp.Headline = grp.Areas.FirstOrDefault(a => a.IsMapArea) ?? grp.Areas[0];
-            grp.LoggedAt = grp.Areas.Max(a => a.LoggedAt);
-            grp.Archived = grp.Areas.All(a => a.Archived);
-            var extra = grp.Areas.Count - 1;
+            var grp = new RunGroup { RunId = members[0].RunId, Areas = members };
+            grp.Headline = RunGrouping.Headline(members, a => a.IsMapArea);
+            grp.LoggedAt = members[^1].LoggedAt;
+            grp.Archived = members.TrueForAll(a => a.Archived);
+            var extra = members.Count - 1;
             grp.Label = extra > 0
                 ? $"{grp.Headline.AreaName}  -  {grp.LoggedAt:MM-dd HH:mm}  (+{extra})"
                 : $"{grp.Headline.AreaName}  -  {grp.LoggedAt:MM-dd HH:mm}";
+            order.Add(grp);
         }
+        order.Sort((a, b) => b.LoggedAt.CompareTo(a.LoggedAt));
+        return order;
+    }
 
-        return order.OrderByDescending(g => g.LoggedAt).ToList();
+    // re-matches the pre-reload pick against the fresh run list (via RunGroupKeys); no match = no selection
+    private void RestorePendingSelection()
+    {
+        var keys = _pendingRestoreRunKeys;
+        var areaKey = _pendingRestoreAreaKey;
+        _pendingRestoreRunKeys = null;
+        _pendingRestoreAreaKey = null;
+        if (keys == null || _runs == null)
+            return;
+
+        var grp = _runs.FirstOrDefault(g => RunGroupKeys(g).Overlaps(keys));
+        if (grp == null)
+            return;   // purged (or otherwise gone) -> no selection, which is correct
+
+        SelectGroup(grp);
+
+        if (areaKey != null)
+        {
+            var area = grp.Areas.FirstOrDefault(a =>
+                Path.GetFileName(a.Folder) == areaKey.Value.folder && a.ZoneSwitchId == areaKey.Value.zsid);
+            if (area != null)
+                SelectArea(area);
+        }
     }
 
     // Select a run: aggregate its areas' summary (loading each area's record lazily), then show the headline
@@ -782,6 +858,8 @@ public class MapStatsWindow
             _wisps = new();
             _monsters = new();
             _exploredRects.Clear();
+            BuildItemRows();
+            BuildPathGrid();
             return;
         }
 
@@ -790,7 +868,7 @@ public class MapStatsWindow
             .Where(s => s.ZoneSwitchId == visit)
             .OrderBy(s => s.ElapsedSeconds)
             .ToList();
-        _path = LoadList<PathPoint>(run.Folder, InstanceStore.PathFile)
+        _path = PathLog.ReadFolder(run.Folder)
             .Where(p => p.Z == visit)
             .OrderBy(p => p.T)
             .ToList();
@@ -838,13 +916,68 @@ public class MapStatsWindow
         _wisps = LoadList<WispEncounter>(run.Folder, InstanceStore.WispFile)
             .Where(w => w.ZoneSwitchId == visit)
             .ToList();
-        _monsters = LoadList<MonsterSighting>(run.Folder, InstanceStore.MonstersFile)
+        _monsters = MonsterLog.ReadFolder(run.Folder)
             .Where(m => m.ZoneSwitchId == visit)
             .ToList();
 
         LoadMapImage(run.Folder);
         FilterPathToWalkable();
         BuildExploredOverlay();
+        BuildItemRows();
+        BuildPathGrid();
+    }
+
+    // grid-space path points (dense path.json, else sparse snapshots) plus the teleport-jump threshold,
+    // recomputed once per selection instead of every frame; forces a screen-cache rebuild too.
+    private void BuildPathGrid()
+    {
+        _pathGrid = _path.Count > 0
+            ? _path.ConvertAll(p => new Vector2(p.X, p.Y)).ToArray()
+            : _snapshots.ConvertAll(s => new Vector2(s.GridX, s.GridY)).ToArray();
+        var r = _selectedArea?.Record;
+        var w = r?.AreaWidth ?? 0;
+        var h = r?.AreaHeight ?? 0;
+        var jump = 0.2f * (float)Math.Sqrt((double)w * w + (double)h * h);
+        _jumpSq = jump * jump;
+        _cacheImgPos = new Vector2(float.NaN, float.NaN);   // force a rebuild
+    }
+
+    // Loot/pickup rows depend only on _loot/_pickups, so rebuild them once here instead of every draw.
+    private void BuildItemRows()
+    {
+        _lootRows.Clear();
+        _pickupRows.Clear();
+        _categories.Clear();
+        _categories.Add("All");
+        // categories in load order, before sorting - matches the old per-frame walk order over _loot then _pickups
+        foreach (var l in _loot) { var cat = Category(l); if (!_categories.Contains(cat)) _categories.Add(cat); }
+        foreach (var p in _pickups) { var cat = Category(p); if (!_categories.Contains(cat)) _categories.Add(cat); }
+        // OrderByDescending is a stable sort (List.Sort isn't) - ties keep load order, same as the old per-frame LINQ
+        _lootRows.AddRange(_loot.OrderByDescending(l => l.ChaosValue ?? 0).Select(l => Row(l, l.StackSize)));
+        _pickupRows.AddRange(_pickups.OrderByDescending(p => p.ChaosValue ?? 0).Select(p => Row(p, p.StackCount)));
+        if (!_categories.Contains(_lootFilter)) _lootFilter = "All";
+        _shownFilter = null;
+    }
+
+    private static ItemRow Row(ItemRecord it, int count)
+    {
+        var label = string.IsNullOrEmpty(it.UniqueName) ? it.BaseName : it.UniqueName;
+        if (string.IsNullOrEmpty(label)) label = it.ClassName;
+        if (string.IsNullOrEmpty(label)) label = it.Path;
+        if (count > 1) label += " x" + count;
+        if (it.ChaosValue is { } v && v > 0) label += "  (" + FmtCur(v) + ")";
+        return new ItemRow { Item = it, Label = label, Category = Category(it), Color = RarityColor(it.Rarity) };
+    }
+
+    // re-buckets the prepared rows into the shown lists only when the category filter actually changed
+    private void ApplyFilter()
+    {
+        if (_shownFilter == _lootFilter) return;
+        _shownFilter = _lootFilter;
+        _lootShown.Clear();
+        _pickupShown.Clear();
+        foreach (var r in _lootRows) if (_lootFilter == "All" || r.Category == _lootFilter) _lootShown.Add(r);
+        foreach (var r in _pickupRows) if (_lootFilter == "All" || r.Category == _lootFilter) _pickupShown.Add(r);
     }
 
     // The player is always on walkable terrain, so a path point outside every terrain loop is a transition
@@ -856,34 +989,10 @@ public class MapStatsWindow
     private void FilterPathToWalkable()
     {
         var loops = _svg?.TerrainLoops;
-        if (loops == null || loops.Count == 0 || _path.Count == 0)
-            return;
-
-        var kept = _path.Where(p => InsideLoops(loops, p.X, p.Y)).ToList();
-        if (kept.Count == _path.Count)
-            return;                                  // nothing off-terrain
-        if (kept.Count < _path.Count * 0.75)
-            return;                                  // too much dropped -> trust the raw path
-        _path = kept;
-    }
-
-    // Even-odd point-in-polygon across all terrain loops (loops + path share grid/viewBox coordinates).
-    private static bool InsideLoops(List<Vector2[]> loops, float px, float py)
-    {
-        var inside = false;
-        foreach (var loop in loops)
-        {
-            var n = loop.Length;
-            for (int i = 0, j = n - 1; i < n; j = i++)
-            {
-                var a = loop[i];
-                var b = loop[j];
-                if ((a.Y > py) != (b.Y > py) &&
-                    px < (b.X - a.X) * (py - a.Y) / (b.Y - a.Y) + a.X)
-                    inside = !inside;
-            }
-        }
-        return inside;
+        if (loops == null || loops.Count == 0 || _path.Count == 0) return;
+        var keep = new HashSet<Vector2>(MapGeometry.WalkablePath(_path.ConvertAll(p => new Vector2(p.X, p.Y)), loops));
+        if (keep.Count == _path.Count) return;
+        _path = _path.FindAll(p => keep.Contains(new Vector2(p.X, p.Y)));
     }
 
     // Recompute the selected run's explored cell mask at the current MAP-REVEAL radius (live — so tuning the
@@ -895,19 +1004,15 @@ public class MapStatsWindow
         _exploredRects.Clear();
         _exploredLivePercent = null;
         _exploredRectsRadius = _settings?.MapRevealRadius.Value ?? -1f;
+        _exploredDirtySince = 0;   // just rebuilt, whatever drag was pending is settled
 
         var record = _selectedArea?.Record;
         if (record == null || _path.Count == 0 || _settings == null) return;
         var r = _settings.MapRevealRadius.Value;
         if (r <= 0f || record.AreaWidth <= 0 || record.AreaHeight <= 0) return;
 
-        var svgPath = Path.Combine(_selectedArea.Folder, InstanceStore.SvgFile);
-        if (!File.Exists(svgPath)) return;
-
-        List<Vector2[]> loops;
-        try { loops = LayoutClassifier.ParseTerrainLoops(File.ReadAllText(svgPath)); }
-        catch { return; }
-        if (loops.Count == 0) return;
+        var loops = _svg?.TerrainLoops;
+        if (loops == null || loops.Count == 0) return;
 
         var pathPts = _path.Select(p => new Vector2(p.X, p.Y)).ToList();
         if (MapCoverage.ComputeMask(record.AreaWidth, record.AreaHeight, loops, pathPts, r) is not { } m)
@@ -1122,7 +1227,7 @@ public class MapStatsWindow
             {
                 var n = names[i];
                 var done = completedAt.ContainsKey(n); // I had a unicode checkmark here but it doesn't render
-                ImGui.TextColored(done ? ContentDoneColor : ContentTodoColor, done ? "" + n : n);
+                ImGui.TextColored(done ? ContentDoneColor : ContentTodoColor, n);
                 if (i < names.Count - 1) ImGui.SameLine();
             }
             ImGui.Separator();
@@ -1149,28 +1254,15 @@ public class MapStatsWindow
     // "All" + the categories present across either list this run.
     private void DrawLootFilter()
     {
-        var categories = new List<string> { "All" };
-        foreach (var l in _loot)
-        {
-            var cat = Category(l);
-            if (!categories.Contains(cat)) categories.Add(cat);
-        }
-        foreach (var p in _pickups)
-        {
-            var cat = Category(p);
-            if (!categories.Contains(cat)) categories.Add(cat);
-        }
-        if (!categories.Contains(_lootFilter))
-            _lootFilter = "All";
-
         ImGui.SetNextItemWidth(-1);
         if (ImGui.BeginCombo("##lootfilter", _lootFilter))
         {
-            foreach (var c in categories)
+            foreach (var c in _categories)
                 if (ImGui.Selectable(c, c == _lootFilter))
                     _lootFilter = c;
             ImGui.EndCombo();
         }
+        ApplyFilter();
     }
 
     // ---- Loot list ----
@@ -1185,29 +1277,21 @@ public class MapStatsWindow
             return;
         }
 
-        var shown = (_lootFilter == "All"
-                ? _loot
-                : _loot.Where(l => Category(l) == _lootFilter))
-            .OrderByDescending(l => l.ChaosValue ?? 0)
-            .ToList();
-
-        ImGui.Text($"Dropped ({shown.Count})");
+        var shown = _lootShown;
+        ImGui.Text("Dropped (" + shown.Count + ")");
         ImGui.SameLine();
         ImGui.TextDisabled("(click to locate)");
         ImGui.Separator();
 
         for (var i = 0; i < shown.Count; i++)
         {
-            var l = shown[i];
-            var label = string.IsNullOrEmpty(l.UniqueName) ? l.BaseName : l.UniqueName;
-            if (string.IsNullOrEmpty(label)) label = l.ClassName;
-            if (string.IsNullOrEmpty(label)) label = l.Path;
-            if (l.StackSize > 1) label += $" x{l.StackSize}";
-            if (l.ChaosValue is { } lv && lv > 0) label += $"  ({FmtVal(lv)})";
-
-            ImGui.PushStyleColor(ImGuiCol.Text, RarityColor(l.Rarity));
-            if (ImGui.Selectable($"{label}##loot{i}", ReferenceEquals(l, _selectedLoot)))
-                _selectedLoot = ReferenceEquals(l, _selectedLoot) ? null : l;  // toggle
+            var row = shown[i];
+            var l = (LootItem)row.Item;
+            ImGui.PushStyleColor(ImGuiCol.Text, row.Color);
+            ImGui.PushID(i);
+            if (ImGui.Selectable(row.Label, ReferenceEquals(l, _selectedLoot)))
+                _selectedLoot = ReferenceEquals(l, _selectedLoot) ? null : l;
+            ImGui.PopID();
             ImGui.PopStyleColor();
         }
     }
@@ -1223,29 +1307,21 @@ public class MapStatsWindow
             return;
         }
 
-        var shown = (_lootFilter == "All"
-                ? _pickups
-                : _pickups.Where(p => Category(p) == _lootFilter))
-            .OrderByDescending(p => p.ChaosValue ?? 0)
-            .ToList();
-
-        ImGui.Text($"Looted ({shown.Count})");
+        var shown = _pickupShown;
+        ImGui.Text("Looted (" + shown.Count + ")");
         ImGui.SameLine();
         ImGui.TextDisabled("(click to locate)");
         ImGui.Separator();
 
         for (var i = 0; i < shown.Count; i++)
         {
-            var p = shown[i];
-            var label = string.IsNullOrEmpty(p.UniqueName) ? p.BaseName : p.UniqueName;
-            if (string.IsNullOrEmpty(label)) label = p.ClassName;
-            if (string.IsNullOrEmpty(label)) label = p.Path;
-            if (p.StackCount > 1) label += $" x{p.StackCount}";
-            if (p.ChaosValue is { } pv && pv > 0) label += $"  ({FmtVal(pv)})";
-
-            ImGui.PushStyleColor(ImGuiCol.Text, RarityColor(p.Rarity));
-            if (ImGui.Selectable($"{label}##pickup{i}", ReferenceEquals(p, _selectedPickup)))
-                _selectedPickup = ReferenceEquals(p, _selectedPickup) ? null : p;  // toggle
+            var row = shown[i];
+            var p = (PickupItem)row.Item;
+            ImGui.PushStyleColor(ImGuiCol.Text, row.Color);
+            ImGui.PushID(i);
+            if (ImGui.Selectable(row.Label, ReferenceEquals(p, _selectedPickup)))
+                _selectedPickup = ReferenceEquals(p, _selectedPickup) ? null : p;
+            ImGui.PopID();
             ImGui.PopStyleColor();
         }
     }
@@ -1255,16 +1331,7 @@ public class MapStatsWindow
 
     // Adaptive currency display (the 5-div rule): render in divine once worth > 5 div, else exalted.
     // Falls back to exalted when the divine rate is unknown.
-    private static string FmtCur(double ex)
-    {
-        if (_divRate > 0 && ex / _divRate > 5) return FmtNum(ex / _divRate) + " div";
-        return FmtNum(ex) + " ex";
-    }
-
-    // Compact value with the adaptive ex/div unit (whole numbers above 100, one decimal below).
-    private static string FmtVal(double v) => FmtCur(v);
-
-    private static string FmtNum(double v) => v >= 100 ? v.ToString("N0") : v.ToString("0.#");
+    private static string FmtCur(double ex) => Currency.Format(ex, _divRate);
 
     // Match key linking a ground drop to its pickup: both are read from the same item entity, so path +
     // rarity agree. Used to drop looted items from the drops list (see LoadRun).
@@ -1301,13 +1368,7 @@ public class MapStatsWindow
         return "Other";
     }
 
-    private static Vector4 RarityColor(string rarity) => rarity switch
-    {
-        "Unique" => new Vector4(0.69f, 0.44f, 0.16f, 1f),
-        "Rare" => new Vector4(1.0f, 1.0f, 0.47f, 1f),
-        "Magic" => new Vector4(0.53f, 0.53f, 1.0f, 1f),
-        _ => new Vector4(0.85f, 0.85f, 0.85f, 1f),
-    };
+    private static Vector4 RarityColor(string rarity) => RarityPalette.Vec(rarity);
 
     // ---- Map pane (player path + death overlays) ----
 
@@ -1395,6 +1456,13 @@ public class MapStatsWindow
         var sy = areaH > 0 ? size.Y / areaH : 0f;
         Vector2 ToScreen(float gx, float gy) => new(imgPos.X + gx * sx, imgPos.Y + gy * sy);
 
+        if (imgPos != _cacheImgPos || size != _cacheSize)
+        {
+            _cacheImgPos = imgPos;
+            _cacheSize = size;
+            RebuildScreenCache(sx, sy, imgPos);
+        }
+
         if (hasSvg)
             DrawSvg(dl, ToScreen);
         else
@@ -1406,9 +1474,16 @@ public class MapStatsWindow
         // Overlays (player path + deaths) need the grid transform — skip if dimensions are unknown.
         if (areaW > 0 && areaH > 0)
         {
-            // Live-tune: rebuild the explored mask when the reveal-radius slider moves.
+            // rebuild once the slider has sat still for 200ms, not on every drag frame
             if (_settings != null && _settings.MapRevealRadius.Value != _exploredRectsRadius)
-                BuildExploredOverlay();
+            {
+                if (_exploredDirtySince == 0) _exploredDirtySince = Environment.TickCount64;
+                else if (Environment.TickCount64 - _exploredDirtySince > 200)
+                {
+                    BuildExploredOverlay();
+                    _exploredDirtySince = 0;
+                }
+            }
 
             // Explored-area tint (under the path/markers): the reveal ∩ walkable cells this run covered,
             // as row-merged rects in grid units. Same reveal R + loop parser as the live explored %.
@@ -1419,28 +1494,13 @@ public class MapStatsWindow
                     dl.AddRectFilled(ToScreen(mn.X, mn.Y), ToScreen(mx.X, mx.Y), col);
             }
 
-            // Player path (grid coords): prefer the dense path.json; fall back to sparse snapshot positions.
-            var pathGrid = _path.Count > 0
-                ? _path.Select(p => new Vector2(p.X, p.Y)).ToList()
-                : _snapshots.Select(s => new Vector2(s.GridX, s.GridY)).ToList();
-
-            // A large gap between consecutive points means a checkpoint teleport, not running — don't
-            // connect those with a line. Threshold scales with the area (20% of the grid diagonal), tested
-            // in grid units so it's independent of zoom.
-            var jump = 0.2f * (float)Math.Sqrt((double)areaW * areaW + (double)areaH * areaH);
-            var jumpSq = jump * jump;
-
-            Vector2? prevGrid = null;
-            foreach (var g in pathGrid)
+            // Player path: cached screen-space segments, split on teleport jumps (see RebuildScreenCache).
+            foreach (var seg in _screenPath)
+                dl.AddPolyline(ref seg[0], seg.Length, PathColor, ImDrawFlags.None, 2f);
+            if (_pathGrid.Length > 0)
             {
-                if (prevGrid is { } pg && Vector2.DistanceSquared(pg, g) <= jumpSq)
-                    dl.AddLine(ToScreen(pg.X, pg.Y), ToScreen(g.X, g.Y), PathColor, 2f);
-                prevGrid = g;
-            }
-            if (pathGrid.Count > 0)
-            {
-                dl.AddCircleFilled(ToScreen(pathGrid[0].X, pathGrid[0].Y), 4f, StartColor);
-                dl.AddCircleFilled(ToScreen(pathGrid[^1].X, pathGrid[^1].Y), 4f, EndColor);
+                dl.AddCircleFilled(ToScreen(_pathGrid[0].X, _pathGrid[0].Y), 4f, StartColor);
+                dl.AddCircleFilled(ToScreen(_pathGrid[^1].X, _pathGrid[^1].Y), 4f, EndColor);
             }
 
             foreach (var d in _deaths)
@@ -1551,31 +1611,54 @@ public class MapStatsWindow
         dl.AddText(paneOrigin + new Vector2(4, 4), 0x88FFFFFF, "scroll: zoom | drag: pan | dbl-click: reset");
     }
 
-    // Stroke the parsed SVG (terrain contour loops, route polylines, target circles) through the grid->screen
-    // transform. 1px screen-space strokes stay crisp at any zoom.
+    // Draw the cached screen-space terrain loops, routes and target circles. Reprojected only when the
+    // pan/zoom transform actually moves (see RebuildScreenCache), not every frame.
     private void DrawSvg(ImDrawListPtr dl, Func<float, float, Vector2> toScreen)
     {
-        foreach (var loop in _svg.TerrainLoops)
-            StrokePolyline(dl, loop, toScreen, _svg.TerrainColor, closed: true);
-
-        foreach (var (pts, color) in _svg.Routes)
-            StrokePolyline(dl, pts, toScreen, color, closed: false);
-
+        foreach (var loop in _screenLoops)
+            if (loop.Length >= 2)
+                dl.AddPolyline(ref loop[0], loop.Length, _svg.TerrainColor, ImDrawFlags.Closed, 1f);
+        foreach (var (pts, color) in _screenRoutes)
+            if (pts.Length >= 2)
+                dl.AddPolyline(ref pts[0], pts.Length, color, ImDrawFlags.None, 1f);
         foreach (var (center, _, color) in _svg.Circles)
             dl.AddCircleFilled(toScreen(center.X, center.Y), 3f, color);
     }
 
-    private void StrokePolyline(ImDrawListPtr dl, Vector2[] grid, Func<float, float, Vector2> toScreen,
-        uint color, bool closed)
+    // Reprojects terrain/routes/path from grid to screen space for the current pan/zoom. Called only when
+    // imgPos/size changed (DrawMapPane) or the selection changed (BuildPathGrid forces a rebuild).
+    private void RebuildScreenCache(float sx, float sy, Vector2 imgPos)
     {
-        if (grid.Length < 2)
-            return;
-        if (_scratch.Length < grid.Length)
-            _scratch = new Vector2[grid.Length];
+        _screenLoops.Clear();
+        _screenRoutes.Clear();
+        _screenPath.Clear();
+        if (_svg != null)
+        {
+            foreach (var loop in _svg.TerrainLoops)
+                _screenLoops.Add(Project(loop, sx, sy, imgPos));
+            foreach (var (pts, color) in _svg.Routes)
+                _screenRoutes.Add((Project(pts, sx, sy, imgPos), color));
+        }
+        // split the path on teleport jumps, each run becomes one polyline
+        var seg = new List<Vector2>();
+        for (var i = 0; i < _pathGrid.Length; i++)
+        {
+            if (i > 0 && Vector2.DistanceSquared(_pathGrid[i - 1], _pathGrid[i]) > _jumpSq)
+            {
+                if (seg.Count > 1) _screenPath.Add(seg.ToArray());
+                seg.Clear();
+            }
+            seg.Add(new Vector2(imgPos.X + _pathGrid[i].X * sx, imgPos.Y + _pathGrid[i].Y * sy));
+        }
+        if (seg.Count > 1) _screenPath.Add(seg.ToArray());
+    }
+
+    private static Vector2[] Project(Vector2[] grid, float sx, float sy, Vector2 imgPos)
+    {
+        var o = new Vector2[grid.Length];
         for (var i = 0; i < grid.Length; i++)
-            _scratch[i] = toScreen(grid[i].X, grid[i].Y);
-        dl.AddPolyline(ref _scratch[0], grid.Length, color,
-            closed ? ImDrawFlags.Closed : ImDrawFlags.None, 1f);
+            o[i] = new Vector2(imgPos.X + grid[i].X * sx, imgPos.Y + grid[i].Y * sy);
+        return o;
     }
 
     // ---- Content icons ----
@@ -1666,10 +1749,11 @@ public class MapStatsWindow
     private static readonly uint EndColor = ImGui.GetColorU32(new Vector4(1.0f, 0.6f, 0.1f, 1f));
 
     // Monster dots, colored by rarity (White / Magic / Rare / Unique).
-    private static readonly uint MonsterWhite = ImGui.GetColorU32(new Vector4(0.85f, 0.85f, 0.85f, 0.85f));
-    private static readonly uint MonsterMagic = ImGui.GetColorU32(new Vector4(0.45f, 0.55f, 1.0f, 0.9f));
-    private static readonly uint MonsterRare = ImGui.GetColorU32(new Vector4(1.0f, 0.95f, 0.35f, 0.95f));
-    private static readonly uint MonsterUnique = ImGui.GetColorU32(new Vector4(1.0f, 0.55f, 0.15f, 1f));
+    // precomputed off the draw path: this runs per monster per frame
+    private static readonly uint MonsterWhite = ImGui.GetColorU32(RarityPalette.Vec("White", 0.9f));
+    private static readonly uint MonsterMagic = ImGui.GetColorU32(RarityPalette.Vec("Magic", 0.9f));
+    private static readonly uint MonsterRare = ImGui.GetColorU32(RarityPalette.Vec("Rare", 0.9f));
+    private static readonly uint MonsterUnique = ImGui.GetColorU32(RarityPalette.Vec("Unique", 0.9f));
 
     private static uint RarityColorU32(string rarity) => rarity switch
     {

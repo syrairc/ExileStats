@@ -25,12 +25,21 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
     private readonly WispTracker _wispTracker = new();
     private readonly StashTracker _stashTracker = new();
     private MapRunRecord _currentArea;
+    // when this visit started. MapRunRecord.EnteredAt is the instance's first entry, which swallows a
+    // hideout round trip into the map's duration
+    private DateTime _areaEnteredUtc = DateTime.UtcNow;
+
+    private double ElapsedSeconds() => (DateTime.UtcNow - _areaEnteredUtc).TotalSeconds;
+
     // Current run-grouping id (see MapRunRecord.RunId): a run spans from leaving a town/hideout until
     // returning to one, so a map + its sub-areas (Abyssal Depths, boss arenas, …) share one id. 0 = no
     // active run (currently in a town/hideout).
     private int _currentRunId;
+    private int _lastRunId;         // most recent run opened, so re-entering its instance resumes it
+    private long _lastRunHash;
     private DateTime _lastSettingsDraw;
     private IngameUIElements _ingameUi;
+    private bool _overlaysVisible;   // computed once per Tick, read by every on-screen readout
 
     // Pending Radar map-image capture for the current map run.
     private bool _capturePending;
@@ -54,15 +63,22 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
     private readonly MapStatsWindow _statsWindow = new();
     private bool _statsOpen;
 
+    // Statistics overlay (xp bar + rates). _runRates holds the rolling per-run history the averages read;
+    // _hasOmen + _divRate are refreshed by the Slow tracker so Render does no scanning.
+    private readonly StatsOverlay _statsOverlay = new();
+    private readonly RunRates _runRates = new();
+    private bool _hasOmen;
+    private double _divRate;
+
     // Cached result of the in-settings layout-classifier validation run (null until "Run validation").
     private List<LayoutValidation.Row> _validationRows;
+    private string _dashboardStatus;
 
     // Net-worth (stash) logging state. Throttle the writes while the stash is open; only append a new
-    // time-series point when the value moved meaningfully. _lastDivineRate is cached for the on-screen readout.
+    // time-series point when the value moved meaningfully.
     private DateTime _nextNetWorthWriteAt;
     private double _lastNetWorthExalted;
     private double _netWorthPeakExalted;   // session peak; partial-tab reads crater far below it -> skip
-    private double? _lastDivineRate;
     private bool _netWorthInitialized;
 
     // Net worth below this fraction of the session peak is a partial-tab read (only some tabs streamed in) -
@@ -89,25 +105,18 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
         // first full rescan rebuilds the peak.
         _netWorthPeakExalted = _stashTracker.TotalExalted;
 
+        // Warm the overlay's rate averages from recent history so they read correctly right after a reload.
+        _runRates.Seed(DirectoryFullName, 6);
+
+        // Prime the divine rate once up front so it's not 0 for the ~1s before the Slow tracker's first run.
+        try { _divRate = ItemPricer.GetDivineRate(GameController) ?? 0; }
+        catch { /* pricing plugin not loaded yet */ }
+
         // Capture the current area now so the counter works when the plugin loads mid-map.
         try
         {
             if (GameController?.Area?.CurrentArea is { } cur)
-            {
-                _currentArea = CaptureArea(cur);
-                AssignRunId(cur);
-                ScheduleMapImageCapture();
-                BeginLootForArea();
-                BeginContentForArea();
-                BeginWispForArea();
-                BeginMonstersForArea();
-                _pickupTracker.SetArea(_currentArea.ZoneSwitchId);
-                _pathTracker.SetArea(_currentArea.AreaId, _currentArea.InstanceHash, _currentArea.ZoneSwitchId);
-                _mapInfoCaptured = false;
-                _dispatcher.OnAreaChange(Settings);
-                _wasAlive = false;
-                _lastPlayerPos = default;
-            }
+                EnterArea(cur, coldStart: true);
         }
         catch { /* not in an area yet */ }
 
@@ -133,7 +142,23 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
 
         // Snapshot the new area's metadata now, while its memory is valid, so the next transition can
         // log it after we've left it.
+        EnterArea(area);
+    }
+
+    // everything that happens on entering an area. Initialise (mid-map load) and AreaChange both come here
+    private void EnterArea(AreaInstance area, bool coldStart = false)
+    {
         _currentArea = CaptureArea(area);
+        // live path starts the visit now, cold start backdates to the game's area-entry time
+        if (coldStart)
+        {
+            var entered = area.TimeEntered.ToUniversalTime();
+            _areaEnteredUtc = entered > DateTime.UtcNow ? DateTime.UtcNow : entered;
+        }
+        else
+        {
+            _areaEnteredUtc = DateTime.UtcNow;
+        }
         AssignRunId(area);
         ScheduleMapImageCapture();
         BeginLootForArea();
@@ -151,6 +176,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
     public override void Tick()
     {
         _ingameUi = GameController.Game.IngameState.IngameUi;
+        _overlaysVisible = ComputeOverlaysVisible();
 
         // Keep the area's monster level fresh (ServerData can be stale at the AreaChange tick).
         if (IsTracked(_currentArea))
@@ -164,9 +190,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
 
         // All per-Tick scanning runs through the dispatcher: one shared entity-bucket view, each tracker
         // gated by its toggle + tracked-area + interval, isolated in its own try/catch. See ExileStats.Dispatch.cs.
-        var elapsed = _currentArea == null
-            ? 0
-            : (DateTime.UtcNow - _currentArea.EnteredAt.ToUniversalTime()).TotalSeconds;
+        var elapsed = _currentArea == null ? 0 : ElapsedSeconds();
         _dispatcher.Tick(this, GameController, Settings, _currentArea, elapsed, IsTracked(_currentArea));
     }
 
@@ -179,12 +203,57 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
             _statsOpen = !_statsOpen;
 
         if (_statsOpen)
-            _statsWindow.Draw(Graphics, DirectoryFullName, Settings, GameController,
+            _statsWindow.Draw(Graphics, DirectoryFullName, Settings, GameController, _divRate,
                 _dispatcher.Profiler, ref _statsOpen);
 
         DrawMonsterCount();
         DrawNetWorth();
+        DrawStatsOverlay();
         DrawProfiler();
+    }
+
+    // ---- On-screen statistics overlay ----
+
+    // XP bar + xp/hour, xp/map, maps/hour, time + maps to the next level, and the missing-omen warning.
+    // Same visibility rule as the monster counter (in a tracked area, or while the config is open, and never
+    // over a large/fullscreen panel). All game reads happen here so StatsOverlay stays UI-only.
+    private void DrawStatsOverlay()
+    {
+        if (!Settings.ShowStatsOverlay)
+            return;
+        if (!_overlaysVisible)
+            return;
+
+        int level;
+        long xp;
+        try
+        {
+            var p = GameController.Player?.GetComponent<Player>();
+            if (p == null)
+                return;
+            level = p.Level;
+            xp = p.XP;
+        }
+        catch { return; }   // player not readable this frame
+
+        var data = new OverlayData(level, XpLevels.Progress(level, xp), XpLevels.Remaining(level, xp),
+            _runRates.Compute(Settings.OverlayAvgRuns.Value), _hasOmen, _divRate);
+        _statsOverlay.Draw(Settings, data);
+    }
+
+    // Shared gate for the on-screen readouts: visible in a tracked area, or while this plugin's config page
+    // is open (so panels can be positioned), but never on top of a large/fullscreen or side panel.
+    private bool ComputeOverlaysVisible()
+    {
+        if ((DateTime.Now - _lastSettingsDraw).TotalMilliseconds < 250)
+            return true;
+        if (!IsTracked(_currentArea))
+            return false;
+        return _ingameUi == null ||
+               !(_ingameUi.FullscreenPanels.Any(x => x.IsVisible) ||
+                 _ingameUi.LargePanels.Any(x => x.IsVisible) ||
+                 _ingameUi.OpenLeftPanel.Address != 0 ||
+                 _ingameUi.OpenRightPanel.Address != 0);
     }
 
     // ---- On-screen tracker profiler overlay ----
@@ -216,6 +285,36 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
     }
 
     // DrawSettings (custom grouped ImGui settings screen) + its node helpers live in ExileStats.Settings.cs.
+
+    // Regenerates map_dashboard.html from the maps/ run.json files + layouts.json. Offline analysis tool,
+    // same family as the layout validation below; the generator reads the json itself, no live state needed.
+    private void DrawDashboardTool()
+    {
+        if (!ImGui.CollapsingHeader("Map dashboard"))
+            return;
+
+        if (ImGui.Button("Generate dashboard"))
+        {
+            try
+            {
+                var outPath = Path.Combine(DirectoryFullName, "map_dashboard.html");
+                DashboardGenerator.Generate(
+                    Path.Combine(DirectoryFullName, "maps"),
+                    Path.Combine(DirectoryFullName, "layouts.json"),
+                    outPath);
+                _dashboardStatus = "Wrote " + Path.GetFileName(outPath);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(outPath) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                _dashboardStatus = "Failed: " + ex.Message;
+                LogError($"ExileStats -> Dashboard generation failed: {ex}");
+            }
+        }
+
+        ImGui.SameLine();
+        ImGui.TextDisabled(_dashboardStatus ?? "rebuilds map_dashboard.html from maps/ + layouts.json");
+    }
 
     // In-settings layout-classifier validation: classify every captured map.svg under maps/ and compare
     // to the hand-labelled layouts.json. Lets the layout classifier be checked in-game without rebuilding.
@@ -300,16 +399,31 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
         (Settings.LogAllAreas.Value || a.IsMapArea);
 
     // Update the run-grouping id after entering a new area, then stamp it onto _currentArea. A run is
-    // bounded by town/hideout stays: entering a tracked area from a town/hideout (or at cold start) opens a
-    // new run keyed by that area's ZoneSwitchId; a sub-area entered from within the run keeps the id (so a
+    // bounded by town/hideout stays: entering a tracked area from a town/hideout (or at cold start) resumes
+    // the last run if it's the same instance (a stash trip or death didn't end the run), else opens a new
+    // run keyed by that area's ZoneSwitchId; a sub-area entered from within the run keeps the id (so a
     // map and its Abyssal Depths / boss arena group together); a town/hideout closes the run. Mirrors how a
     // map run always begins and ends in the hideout.
     private void AssignRunId(AreaInstance area)
     {
         if (area.IsTown || area.IsHideout)
+        {
             _currentRunId = 0;
+        }
         else if (_currentRunId == 0)
-            _currentRunId = _currentArea.ZoneSwitchId;
+        {
+            // back into the instance the last run started in: same run, not a new one
+            if (_lastRunId != 0 && _currentArea.InstanceHash == _lastRunHash)
+            {
+                _currentRunId = _lastRunId;
+            }
+            else
+            {
+                _currentRunId = _currentArea.ZoneSwitchId;
+                _lastRunId = _currentRunId;
+                _lastRunHash = _currentArea.InstanceHash;
+            }
+        }
         _currentArea.RunId = _currentRunId;
     }
 
@@ -335,7 +449,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
             AreaLevel = wa?.AreaLevel ?? 0,
             WorldAreaId = wa?.WorldAreaId ?? 0,
             IsUnique = wa?.IsUnique ?? false,
-            IsMapArea = areaId.StartsWith("Map", StringComparison.Ordinal),
+            IsMapArea = InstanceStore.IsMapAreaId(areaId),
         };
 
         // Area grid dimensions (for the map-view coord transform). Saved per instance — varies per map.
@@ -369,9 +483,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
         {
             var record = _currentArea;
             record.LoggedAt = DateTime.Now;
-            // EnteredAt is UTC (area.TimeEntered); compare in UTC so we don't mix it with a local clock.
-            record.DurationSeconds =
-                Math.Round((DateTime.UtcNow - record.EnteredAt.ToUniversalTime()).TotalSeconds, 1);
+            record.DurationSeconds = Math.Round(ElapsedSeconds(), 1);
 
             // End-of-run server values + deltas.
             try
@@ -448,6 +560,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
                             .Where(pp => pp.Z == record.ZoneSwitchId)
                             .Select(pp => new Vector2(pp.X, pp.Y))
                             .ToList();
+                        pathPts = MapGeometry.WalkablePath(pathPts, loops);
                         var cov = MapCoverage.Compute(record.AreaWidth, record.AreaHeight, loops, pathPts, rReveal);
                         if (cov is { } c)
                         {
@@ -468,6 +581,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
 
             MapMonsterLog.Append(DirectoryFullName, record.AreaId, record.InstanceHash, record);
             RunIndex.Append(DirectoryFullName, record);
+            _runRates.Add(record);   // feeds the overlay's xp/map + maps/hour averages
         }
         catch (Exception ex)
         {
@@ -666,7 +780,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
             var snap = new Snapshot
             {
                 At = DateTime.Now,
-                ElapsedSeconds = Math.Round((DateTime.UtcNow - rec.EnteredAt.ToUniversalTime()).TotalSeconds, 1),
+                ElapsedSeconds = Math.Round(ElapsedSeconds(), 1),
                 ZoneSwitchId = rec.ZoneSwitchId,
                 GridX = pos.X,
                 GridY = pos.Y,
@@ -762,7 +876,7 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
                 var death = new Death
                 {
                     At = DateTime.Now,
-                    ElapsedSeconds = Math.Round((DateTime.UtcNow - rec.EnteredAt.ToUniversalTime()).TotalSeconds, 1),
+                    ElapsedSeconds = Math.Round(ElapsedSeconds(), 1),
                     ZoneSwitchId = rec.ZoneSwitchId,
                     GridX = _lastPlayerPos.X,
                     GridY = _lastPlayerPos.Y,
@@ -817,10 +931,10 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
 
     private static readonly (MonsterRarity Rarity, string Label, Color Color)[] CounterRows =
     [
-        (MonsterRarity.White, "White", Color.White),
-        (MonsterRarity.Magic, "Magic", Color.FromArgb(136, 136, 255)),
-        (MonsterRarity.Rare, "Rare", Color.FromArgb(255, 255, 119)),
-        (MonsterRarity.Unique, "Unique", Color.DarkOrange),
+        (MonsterRarity.White, "White", RarityPalette.White),
+        (MonsterRarity.Magic, "Magic", RarityPalette.Magic),
+        (MonsterRarity.Rare, "Rare", RarityPalette.Rare),
+        (MonsterRarity.Unique, "Unique", RarityPalette.Unique),
     ];
 
     private void DrawMonsterCount()
@@ -828,18 +942,10 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
         if (!Settings.ShowCounter)
             return;
 
-        // Show only inside maps, or while the config is open (so it can be positioned); never on top of
-        // large/fullscreen panels (inventory, atlas, etc.).
-        var configOpen = (DateTime.Now - _lastSettingsDraw).TotalMilliseconds < 250;
-        if (!configOpen)
-        {
-            if (!IsTracked(_currentArea))
-                return;
-            if (_ingameUi != null &&
-                (_ingameUi.FullscreenPanels.Any(x => x.IsVisible) ||
-                 _ingameUi.LargePanels.Any(x => x.IsVisible)))
-                return;
-        }
+        // Show only inside tracked areas, or while the config is open (so it can be positioned); never on
+        // top of large/fullscreen panels (inventory, atlas, etc.).
+        if (!_overlaysVisible)
+            return;
 
         var pos = new Vector2(Settings.PositionX.Value, Settings.PositionY.Value);
         var header = $"Monsters: {_monsterCounter.SeenTotal}  (alive {_monsterCounter.AliveTotal})";
@@ -870,10 +976,8 @@ public partial class ExileStats : BaseSettingsPlugin<ExileStatsSettings>
         if (ex <= 0)
             return;
 
-        var text = _lastDivineRate is > 0
-            ? $"Net worth: {ex:N0} ex  ({ex / _lastDivineRate.Value:N1} div)"
-            : $"Net worth: {ex:N0} ex";
-        // Its own position — the default counter spot (left edge) sits under the stash panel.
+        var text = "Net worth: " + Currency.FormatWithDivine(ex, _divRate);
+        // own position node: this only shows with the stash open, so it needs a spot the panel leaves free
         var pos = new Vector2(Settings.NetWorthPositionX.Value, Settings.NetWorthPositionY.Value);
         Graphics.DrawText(text, pos, Settings.TextColor.Value);
     }

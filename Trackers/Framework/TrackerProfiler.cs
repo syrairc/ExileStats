@@ -17,12 +17,11 @@ public sealed class TrackerProfiler
         public double LastMs;
         public double TotalMs;                                   // sum of every sample since reset
         public double MaxMs;
-        public double AvgMs => Calls > 0 ? TotalMs / Calls : 0;  // cumulative mean — stable over a long run
+        public double AvgMs => Calls > 0 ? TotalMs / Calls : 0;  // cumulative mean - stable over a long run
     }
 
     private readonly Dictionary<string, Stat> _stats = new();
-    private readonly Stopwatch _sw = new();
-    private string _active;
+    private readonly List<(string Name, long Ticks)> _stack = new();   // open frames, so Begin/End can nest
 
     public bool Enabled { get; set; }
 
@@ -32,25 +31,47 @@ public sealed class TrackerProfiler
     {
         if (!Enabled)
             return;
-        _active = name;
-        _sw.Restart();
+        _stack.Add((name, Stopwatch.GetTimestamp()));
     }
 
     public void End(string name)
     {
-        if (!Enabled || _active != name)
+        if (!Enabled)
             return;
-        _sw.Stop();
-        var ms = _sw.Elapsed.TotalMilliseconds;
+        // pop the innermost frame with this name; drops any inner frame left open by a throw
+        for (var i = _stack.Count - 1; i >= 0; i--)
+        {
+            if (_stack[i].Name != name)
+                continue;
+            var ms = (Stopwatch.GetTimestamp() - _stack[i].Ticks) * 1000.0 / Stopwatch.Frequency;
+            _stack.RemoveRange(i, _stack.Count - i);
+            Record(name, ms);
+            return;
+        }
+    }
+
+    /// <summary>Record a plain number (not a duration) as its own row - entity counts, call counts.</summary>
+    public void Count(string name, double n)
+    {
+        if (!Enabled)
+            return;
+        Record(name, n);
+    }
+
+    private void Record(string name, double v)
+    {
         if (!_stats.TryGetValue(name, out var st))
             _stats[name] = st = new Stat();
         st.Calls++;
-        st.LastMs = ms;
-        st.TotalMs += ms;
-        if (ms > st.MaxMs)
-            st.MaxMs = ms;
-        _active = null;
+        st.LastMs = v;
+        st.TotalMs += v;
+        if (v > st.MaxMs)
+            st.MaxMs = v;
     }
 
-    public void Reset() => _stats.Clear();
+    public void Reset()
+    {
+        _stats.Clear();
+        _stack.Clear();
+    }
 }

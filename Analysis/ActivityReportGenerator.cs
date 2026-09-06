@@ -113,50 +113,38 @@ public static class ActivityReportGenerator
         public double Profit;
 
         public IEnumerable<PickupItem> Pickups => Members.SelectMany(m => m.Pickups);
-        public IEnumerable<Death> Deaths => Members.SelectMany(m => m.Deaths);
     }
 
-    // IsMapArea isn't persisted to run.json ([JsonIgnore]), so derive "is an atlas map" from the AreaId here.
-    private static bool IsMapId(string areaId) =>
-        areaId != null && areaId.StartsWith("Map", StringComparison.Ordinal);
-
-    // Group the per-visit RunData into runs by RunId (0 / legacy data = its own solo run). Members ordered by
-    // entry time; aggregates summed (deltas are additive across a run's contiguous areas). Newest run first.
+    // Group the per-visit RunData into runs via RunGrouping (0 / legacy data = its own solo run). Newest run first.
     private static List<RunGroup> GroupRuns(List<RunData> visits)
     {
-        var byKey = new Dictionary<string, RunGroup>();
         var order = new List<RunGroup>();
-        foreach (var v in visits)
+        foreach (var members in RunGrouping.Group(visits, v => v.Record.RunId, v => v.Folder,
+                     v => v.Record.ZoneSwitchId, v => v.Record.LoggedAt))
         {
-            var rid = v.Record.RunId;
-            var key = rid != 0 ? "run:" + rid : "solo:" + v.Folder + ":" + v.Record.ZoneSwitchId;
-            if (!byKey.TryGetValue(key, out var g))
-            {
-                g = new RunGroup();
-                byKey[key] = g;
-                order.Add(g);
-            }
-            g.Members.Add(v);
+            var g = new RunGroup { Members = members };
+            g.Headline = RunGrouping.Headline(members, m => InstanceStore.IsMapAreaId(m.Record.AreaId));
+            Aggregate(g);
+            order.Add(g);
         }
+        order.Sort((a, b) => b.LoggedAt.CompareTo(a.LoggedAt));
+        return order;
+    }
 
-        foreach (var g in order)
-        {
-            g.Members = g.Members.OrderBy(m => m.Record.EnteredAt).ToList();
-            g.Headline = g.Members.FirstOrDefault(m => IsMapId(m.Record.AreaId)) ?? g.Members[0];
-            g.MapName = g.Headline.MapName;
-            g.LoggedAt = g.Members.Max(m => m.Record.LoggedAt);
-            g.EnteredAt = g.Members.Min(m => m.Record.EnteredAt);
-            g.DurationSec = g.Members.Sum(m => m.DurationSec);
-            g.PickupValue = g.Members.Sum(m => m.PickupValue);
-            g.GoldGained = g.Members.Sum(m => m.GoldGained);
-            g.XpGained = g.Members.Sum(m => m.XpGained);
-            g.Monsters = g.Members.Sum(m => m.Monsters);
-            g.DeathCount = g.Members.Sum(m => m.Deaths.Count);
-            g.UnitsTravelled = g.Members.Sum(m => m.UnitsTravelled);
-            g.Profit = g.Members.Sum(m => m.Profit);
-        }
-
-        return order.OrderByDescending(g => g.LoggedAt).ToList();
+    // sums a run's aggregate fields across its member visits (deltas are additive across contiguous areas)
+    private static void Aggregate(RunGroup g)
+    {
+        g.MapName = g.Headline.MapName;
+        g.LoggedAt = g.Members.Max(m => m.Record.LoggedAt);
+        g.EnteredAt = g.Members.Min(m => m.Record.EnteredAt);
+        g.DurationSec = g.Members.Sum(m => m.DurationSec);
+        g.PickupValue = g.Members.Sum(m => m.PickupValue);
+        g.GoldGained = g.Members.Sum(m => m.GoldGained);
+        g.XpGained = g.Members.Sum(m => m.XpGained);
+        g.Monsters = g.Members.Sum(m => m.Monsters);
+        g.DeathCount = g.Members.Sum(m => m.Deaths.Count);
+        g.UnitsTravelled = g.Members.Sum(m => m.UnitsTravelled);
+        g.Profit = g.Members.Sum(m => m.Profit);
     }
 
     public static string Generate(string pluginDirectory, double hours, double divineRate, ReportOptions opts)
@@ -208,12 +196,11 @@ public static class ActivityReportGenerator
                 Folder = fullFolder,
                 MapName = string.IsNullOrEmpty(record.DisplayName) ? record.Name : record.DisplayName,
                 Pickups = LoadList<PickupItem>(fullFolder, InstanceStore.PickupsFile).Where(p => p.ZoneSwitchId == zone).ToList(),
-                Loot = LoadList<LootItem>(fullFolder, InstanceStore.LootFile).Where(l => l.ZoneSwitchId == zone).ToList(),
                 Deaths = LoadList<Death>(fullFolder, InstanceStore.DeathsFile).Where(d => d.ZoneSwitchId == zone).ToList(),
-                Path = LoadList<PathPoint>(fullFolder, InstanceStore.PathFile).Where(p => p.Z == zone).OrderBy(p => p.T).ToList(),
+                Path = PathLog.ReadFolder(fullFolder).Where(p => p.Z == zone).OrderBy(p => p.T).ToList(),
                 Snapshots = LoadList<Snapshot>(fullFolder, InstanceStore.SnapshotFile).Where(s => s.ZoneSwitchId == zone).OrderBy(s => s.ElapsedSeconds).ToList(),
                 Content = LoadList<ContentSighting>(fullFolder, InstanceStore.ContentFile).Where(c => c.ZoneSwitchId == zone).ToList(),
-                MonsterPositions = LoadList<MonsterSighting>(fullFolder, InstanceStore.MonstersFile).Where(m => m.ZoneSwitchId == zone).ToList(),
+                MonsterPositions = MonsterLog.ReadFolder(fullFolder).Where(m => m.ZoneSwitchId == zone).ToList(),
             };
             rd.DurationSec = Duration(record);
             rd.PickupValue = record.PickupValue > 0 ? record.PickupValue : rd.Pickups.Sum(p => p.ChaosValue ?? 0);
@@ -230,20 +217,8 @@ public static class ActivityReportGenerator
 
         PrepareIcons(pluginDirectory);
 
-        var grp = new RunGroup();
-        grp.Members = visits.OrderBy(v => v.Record.EnteredAt).ToList();
-        grp.Headline = grp.Members.FirstOrDefault(m => IsMapId(m.Record.AreaId)) ?? grp.Members[0];
-        grp.MapName = string.IsNullOrEmpty(mapName) ? grp.Headline.MapName : mapName;
-        grp.LoggedAt = grp.Members.Max(m => m.Record.LoggedAt);
-        grp.EnteredAt = grp.Members.Min(m => m.Record.EnteredAt);
-        grp.DurationSec = grp.Members.Sum(m => m.DurationSec);
-        grp.PickupValue = grp.Members.Sum(m => m.PickupValue);
-        grp.GoldGained = grp.Members.Sum(m => m.GoldGained);
-        grp.XpGained = grp.Members.Sum(m => m.XpGained);
-        grp.Monsters = grp.Members.Sum(m => m.Monsters);
-        grp.DeathCount = grp.Members.Sum(m => m.Deaths.Count);
-        grp.UnitsTravelled = grp.Members.Sum(m => m.UnitsTravelled);
-        grp.Profit = grp.Members.Sum(m => m.Profit);
+        var grp = GroupRuns(visits)[0];
+        if (!string.IsNullOrEmpty(mapName)) grp.MapName = mapName;
 
         var dir = Path.Combine(pluginDirectory, "reports");
         Directory.CreateDirectory(dir);
@@ -265,7 +240,7 @@ public static class ActivityReportGenerator
         _showPathOnMap = opts.ShowPathOnMaps;
         _showExploredOnMap = opts.ShowExploredOnMaps;
         _revealRadius = opts.RevealRadius;
-        _tintHex = string.IsNullOrEmpty(opts.ExploredTintHex) ? "#00C800" : opts.ExploredTintHex;
+        _tintHex = string.IsNullOrEmpty(opts.ExploredTintHex) ? ContentCatalog.ToHex(MapCoverage.DefaultTint) : opts.ExploredTintHex;
         _tintOpacity = opts.ExploredTintOpacity;
 
         var head = g.Headline.Record;
@@ -355,10 +330,10 @@ public static class ActivityReportGenerator
                 Pickups = LoadList<PickupItem>(folder, InstanceStore.PickupsFile).Where(p => p.ZoneSwitchId == zone).ToList(),
                 Loot = LoadList<LootItem>(folder, InstanceStore.LootFile).Where(l => l.ZoneSwitchId == zone).ToList(),
                 Deaths = LoadList<Death>(folder, InstanceStore.DeathsFile).Where(d => d.ZoneSwitchId == zone).ToList(),
-                Path = LoadList<PathPoint>(folder, InstanceStore.PathFile).Where(p => p.Z == zone).OrderBy(p => p.T).ToList(),
+                Path = PathLog.ReadFolder(folder).Where(p => p.Z == zone).OrderBy(p => p.T).ToList(),
                 Snapshots = LoadList<Snapshot>(folder, InstanceStore.SnapshotFile).Where(s => s.ZoneSwitchId == zone).OrderBy(s => s.ElapsedSeconds).ToList(),
                 Content = LoadList<ContentSighting>(folder, InstanceStore.ContentFile).Where(c => c.ZoneSwitchId == zone).ToList(),
-                MonsterPositions = LoadList<MonsterSighting>(folder, InstanceStore.MonstersFile).Where(m => m.ZoneSwitchId == zone).ToList(),
+                MonsterPositions = MonsterLog.ReadFolder(folder).Where(m => m.ZoneSwitchId == zone).ToList(),
             };
 
             rd.DurationSec = Duration(record);
@@ -383,12 +358,8 @@ public static class ActivityReportGenerator
         catch { return new List<T>(); }
     }
 
-    // tz-aware (TimeEntered is UTC, LoggedAt local) recompute; fall back to the stored value.
-    private static double Duration(MapRunRecord r)
-    {
-        var d = (r.LoggedAt.ToUniversalTime() - r.EnteredAt.ToUniversalTime()).TotalSeconds;
-        return d > 0 ? d : r.DurationSeconds;
-    }
+    // stored per-visit segment. recomputing off EnteredAt would re-add the hideout trip
+    private static double Duration(MapRunRecord r) => Math.Max(0, r.DurationSeconds);
 
     // Sum grid distance along the dense path (fall back to snapshot positions), skipping checkpoint
     // teleports — a gap > 20% of the grid diagonal isn't running. Mirrors MapStatsWindow's jump filter.
@@ -424,9 +395,9 @@ public static class ActivityReportGenerator
 
     private static string Js(string s) => (s ?? "").Replace("\\", "\\\\").Replace("'", "\\'");
 
-    private static string N(double v) => v >= 100 || v <= -100 ? v.ToString("N0", Ci) : v.ToString("0.#", Ci);
+    private static string N(double v) => Currency.Num(v);
     private static string Sign(double v) => (v >= 0 ? "+" : "") + N(v);
-    private static string Ex(double v) => N(v) + " ex";
+    private static string Ex(double v) => Currency.Num(v) + " " + Currency.BaseUnit;
 
     // Ex-per-divine rate for the current report (0 = unknown / NinjaPricer absent). Set at BuildHtml start.
     private static double _divRate;
@@ -436,15 +407,11 @@ public static class ActivityReportGenerator
     private static bool _showPathOnMap;
     private static bool _showExploredOnMap;
     private static float _revealRadius;
-    private static string _tintHex = "#00C800";
+    private static string _tintHex = ContentCatalog.ToHex(MapCoverage.DefaultTint);
     private static double _tintOpacity = 0.25;
     // Adaptive value: render in divine once the value exceeds 5 div, else exalted. Falls back to exalted
     // when the divine rate is unknown.
-    private static string V(double ex)
-    {
-        if (_divRate > 0 && ex / _divRate > 5) return N(ex / _divRate) + " div";
-        return Ex(ex);
-    }
+    private static string V(double ex) => Currency.Format(ex, _divRate);
 
     // Gold piles: skipped at logging (LootTracker drops Metadata/Items/Currency/GoldCoin), but guard the
     // report too so any legacy row doesn't pollute the "most dropped" tally.
@@ -473,7 +440,7 @@ public static class ActivityReportGenerator
         _showPathOnMap = opts.ShowPathOnMaps;
         _showExploredOnMap = opts.ShowExploredOnMaps;
         _revealRadius = opts.RevealRadius;
-        _tintHex = string.IsNullOrEmpty(opts.ExploredTintHex) ? "#00C800" : opts.ExploredTintHex;
+        _tintHex = string.IsNullOrEmpty(opts.ExploredTintHex) ? ContentCatalog.ToHex(MapCoverage.DefaultTint) : opts.ExploredTintHex;
         _tintOpacity = opts.ExploredTintOpacity;
         // ----- aggregates -----
         // Group visits into runs (a map + its sub-areas share a RunId). Period totals still sum every visit
@@ -512,8 +479,8 @@ public static class ActivityReportGenerator
         {
             var nwEx = latestNw.TotalExalted;
             var nwDiv = latestNw.TotalDivine ?? (divineRate > 0 ? nwEx / divineRate : (double?)null);
-            // One unit only: divine once net worth > 5 div, else exalted.
-            bool useDiv = nwDiv is { } dv && dv > 5;
+            // one unit only, uses the persisted divine total so a rate drift can't flip it after logging
+            bool useDiv = nwDiv is { } dv && dv > Currency.DefaultDivThreshold;
             nwCards = Card("Net worth", useDiv ? N(nwDiv.Value) + " div" : Ex(nwEx));
             if (nwInWindow.Count >= 2)
             {
@@ -536,8 +503,9 @@ public static class ActivityReportGenerator
         var nwDivData = hasNwDiv
             ? string.Join(",", nwSeries.Select(p => NwDiv(p).Value.ToString("0.###", Ci)))
             : "";
-        // One unit only (same rule as the card): divine once the latest point is > 5 div, else exalted.
-        var nwUseDiv = hasNwDiv && NwDiv(nwSeries[nwSeries.Count - 1]).Value > 5;
+        // One unit only (same rule as the card): divine once the latest point is > threshold div, else exalted.
+        // hasNwDiv already guarantees NwDiv(last) is non-null.
+        var nwUseDiv = hasNwDiv && NwDiv(nwSeries[nwSeries.Count - 1]).Value > Currency.DefaultDivThreshold;
 
         var cards =
             (opts.ShowNetWorth ? nwCards : "") +
@@ -1256,37 +1224,12 @@ public static class ActivityReportGenerator
         return sb.ToString();
     }
 
-    // Path points filtered to walkable terrain (even-odd point-in-polygon across the loops). Mirrors
-    // MapStatsWindow.FilterPathToWalkable: skip the filter if it would drop > 25% (unreliable parse).
     private static List<Vector2> WalkablePath(RunData r, List<Vector2[]> loops)
     {
         var pts = r.Path.Count > 0
-            ? r.Path.Select(p => new Vector2(p.X, p.Y)).ToList()
-            : r.Snapshots.Select(s => new Vector2(s.GridX, s.GridY)).ToList();
-        if (loops == null || loops.Count == 0 || pts.Count == 0)
-            return pts;
-        var kept = pts.Where(p => InsideLoops(loops, p.X, p.Y)).ToList();
-        if (kept.Count == pts.Count || kept.Count < pts.Count * 0.75)
-            return pts;
-        return kept;
-    }
-
-    private static bool InsideLoops(List<Vector2[]> loops, float px, float py)
-    {
-        var inside = false;
-        foreach (var loop in loops)
-        {
-            var n = loop.Length;
-            for (int i = 0, j = n - 1; i < n; j = i++)
-            {
-                var a = loop[i];
-                var b = loop[j];
-                if ((a.Y > py) != (b.Y > py) &&
-                    px < (b.X - a.X) * (py - a.Y) / (b.Y - a.Y) + a.X)
-                    inside = !inside;
-            }
-        }
-        return inside;
+            ? r.Path.ConvertAll(p => new Vector2(p.X, p.Y))
+            : r.Snapshots.ConvertAll(s => new Vector2(s.GridX, s.GridY));
+        return MapGeometry.WalkablePath(pts, loops);
     }
 
     // Monster first-seen positions as small rarity-colored SVG circles in grid space. No icons (file size).
@@ -1307,13 +1250,7 @@ public static class ActivityReportGenerator
         return sb.ToString();
     }
 
-    private static string RarityHex(string rarity) => rarity switch
-    {
-        "Magic" => "#7388ff",
-        "Rare" => "#fff25a",
-        "Unique" => "#ff8c26",
-        _ => "#d9d9d9",
-    };
+    private static string RarityHex(string rarity) => RarityPalette.Hex(rarity);
 
     private static string BuildContentLegend(RunData r)
     {
@@ -1395,6 +1332,7 @@ public static class ActivityReportGenerator
   th{color:var(--muted);font-weight:500;}
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;}
   table.kv td.k{color:var(--muted);width:50%;}
+  /* darker than RarityPalette on purpose: this text sits on the light page bg, not the dark map */
   .r-unique{color:#af6025;} .r-rare{color:#b0a000;} .r-magic{color:#6a6acf;} .r-normal{color:var(--text);}
   details.run{background:var(--surface);border:.5px solid var(--border);border-radius:10px;margin:8px 0;padding:4px 12px;}
   details.run summary{cursor:pointer;font-size:14px;padding:6px 0;}

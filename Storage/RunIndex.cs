@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using Newtonsoft.Json;
 
 namespace ExileStats;
 
@@ -29,38 +27,13 @@ public class RunIndexEntry
 /// so date-range statistics scan one file instead of every instance folder.</summary>
 public static class RunIndex
 {
-    private static readonly object _lock = new();
-
     /// <summary>Reads the full index without modifying it.</summary>
-    public static List<RunIndexEntry> ReadAll(string pluginDirectory)
-    {
-        var path = InstanceStore.IndexPath(pluginDirectory);
-        lock (_lock)
-            return ReadAllInternal(path);
-    }
+    public static List<RunIndexEntry> ReadAll(string pluginDirectory) =>
+        JsonArrayLog<RunIndexEntry>.Read(InstanceStore.IndexPath(pluginDirectory));
 
-    /// <summary>Locked read → transform → write-back. Use for archive/purge operations.</summary>
-    public static void Modify(string pluginDirectory, Action<List<RunIndexEntry>> transform)
-    {
-        var path = InstanceStore.IndexPath(pluginDirectory);
-        lock (_lock)
-        {
-            var list = ReadAllInternal(path);
-            transform(list);
-            File.WriteAllText(path, JsonConvert.SerializeObject(list, Formatting.Indented));
-        }
-    }
-
-    private static List<RunIndexEntry> ReadAllInternal(string path)
-    {
-        if (!File.Exists(path)) return new List<RunIndexEntry>();
-        try
-        {
-            var json = File.ReadAllText(path);
-            return JsonConvert.DeserializeObject<List<RunIndexEntry>>(json) ?? new List<RunIndexEntry>();
-        }
-        catch { return new List<RunIndexEntry>(); }
-    }
+    /// <summary>Locked read, transform, write-back. Use for archive/purge operations.</summary>
+    public static void Modify(string pluginDirectory, Action<List<RunIndexEntry>> transform) =>
+        JsonArrayLog<RunIndexEntry>.Modify(InstanceStore.IndexPath(pluginDirectory), transform);
 
     public static void Append(string pluginDirectory, MapRunRecord record)
     {
@@ -77,21 +50,6 @@ public static class RunIndex
             IsMapArea = record.IsMapArea,
             Folder = InstanceStore.FolderName(record.AreaId, record.InstanceHash),
         };
-
-        var path = InstanceStore.IndexPath(pluginDirectory);
-        lock (_lock)
-        {
-            List<RunIndexEntry> list = null;
-            if (File.Exists(path))
-            {
-                var json = File.ReadAllText(path);
-                if (!string.IsNullOrWhiteSpace(json))
-                    list = JsonConvert.DeserializeObject<List<RunIndexEntry>>(json);
-            }
-
-            list ??= new List<RunIndexEntry>();
-            list.Add(entry);
-            File.WriteAllText(path, JsonConvert.SerializeObject(list, Formatting.Indented));
-        }
+        JsonArrayLog<RunIndexEntry>.Append(InstanceStore.IndexPath(pluginDirectory), entry);
     }
 }

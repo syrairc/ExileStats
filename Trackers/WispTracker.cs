@@ -9,7 +9,8 @@ using Vector2 = System.Numerics.Vector2;
 namespace ExileStats;
 
 /// <summary>
-/// Per-Tick scan of <c>GameController.Entities</c> for Tormented Spirit / Azmeri wisp encounters. A wisp
+/// Per-Tick scan of the shared <c>AllValid</c> + <c>Monsters</c> buckets for Tormented Spirit / Azmeri wisp
+/// encounters. A wisp
 /// roams the map touching monsters (applying a buff) and eventually possesses a Rare/Unique. An encounter
 /// <b>starts</b> when the first monster gains the wisp buff and <b>ends</b> when a rare becomes possessed;
 /// the resolved encounter is returned as one <see cref="WispEncounter"/> (buffed/slain counts + the victim's
@@ -61,27 +62,25 @@ public class WispTracker
                 _known[kv.Key] = kv.Value;
     }
 
-    /// <summary>Scan the entity list once; return encounters resolved (possessed) this tick — the caller
-    /// upserts them to wisps.json. Returns an empty list on a normal tick.</summary>
-    public List<WispEncounter> Scan(IEnumerable<Entity> entities, double elapsedSeconds)
+    /// <summary>Scan once; return encounters resolved (possessed) this tick. <paramref name="allValid"/> is only
+    /// walked for the wisp entity itself (type unconfirmed); monster work uses the shared Monster bucket.</summary>
+    public List<WispEncounter> Scan(IReadOnlyList<Entity> allValid, IReadOnlyList<Entity> monsters,
+        double elapsedSeconds)
     {
         var dirty = new List<WispEncounter>();
-        if (entities == null)
+        if (allValid == null || monsters == null)
             return dirty;
 
         var elapsed = Math.Round(elapsedSeconds, 1);
 
-        // Bucket what we need in one pass: active wisps and all monsters (we view the monster list a few ways).
+        // active wisps only. cheap Contains reject inside IsActiveWisp, regex only on a hit
         var wisps = new List<(long Id, Vector2 Pos, string Variant)>();
-        var monsters = new List<Entity>();
-        foreach (var e in entities)
+        foreach (var e in allValid)
         {
             if (e is not { IsValid: true })
                 continue;
             if (IsActiveWisp(e))
                 wisps.Add((e.Id, e.GridPos, VariantOf(e.Path)));
-            if (e.Type == EntityType.Monster)
-                monsters.Add(e);
         }
 
         // 1. While a wisp roams, remember each rare/unique's first-seen position. We only learn which rare is
@@ -117,8 +116,10 @@ public class WispTracker
         //    the wisp entity is gone, so the encounter lives only in _active — match by wisp->victim distance.)
         foreach (var e in monsters)
         {
-            if (!IsPossessed(e) || !_resolvedVictims.Add(e.Id))
+            // rarity first: only rares/uniques get possessed, and the Stats dictionary read is the expensive part
+            if (!IsRareOrUnique(e) || _resolvedVictims.Contains(e.Id) || !IsPossessed(e))
                 continue;
+            _resolvedVictims.Add(e.Id);
             if (_active.Count == 0)
                 continue;   // never saw a buff phase (e.g. immediate possession) — nothing to attribute
 

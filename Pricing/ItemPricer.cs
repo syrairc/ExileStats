@@ -68,12 +68,16 @@ public static class ItemPricer
     {
         try
         {
-            var divine = gc.Files.BaseItemTypes.Contents.Values.FirstOrDefault(b => b.BaseName == "Divine Orb");
-            return GetBaseItemTypeValue(divine, gc);
+            // The BaseItemTypes scan is a linear walk of thousands of entries and the answer never changes,
+            // so cache it - callers here poll this per frame.
+            _divineBase ??= gc.Files.BaseItemTypes.Contents.Values.FirstOrDefault(b => b.BaseName == "Divine Orb");
+            return GetBaseItemTypeValue(_divineBase, gc);
         }
         catch
         {
             return null;
         }
     }
+
+    private static BaseItemType _divineBase;
 }

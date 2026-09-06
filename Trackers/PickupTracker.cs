@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using ExileCore2;
 using ExileCore2.PoEMemory.Components;
+using ExileCore2.PoEMemory.MemoryObjects;
 
 namespace ExileStats;
 
@@ -23,10 +23,14 @@ namespace ExileStats;
 /// </summary>
 public class PickupTracker
 {
-    // (col,row) -> (item path, stack size). Slot position is stable across ticks. Two dicts are double-
-    // buffered (fill _curSlots, swap with _prevSlots) so a tick allocates no dictionary and copies nothing.
-    private Dictionary<(int, int), (string Path, int Size)> _prevSlots = new();
-    private Dictionary<(int, int), (string Path, int Size)> _curSlots = new();
+    // (col,row) -> (path, size). _curSlots is refilled each scan and folded into the _prevSlots baseline
+    private readonly Dictionary<(int, int), (string Path, int Size)> _prevSlots = new();
+    private readonly Dictionary<(int, int), (string Path, int Size)> _curSlots = new();
+    private readonly Dictionary<(int, int), Entity> _itemsBySlot = new();
+    // slots that read absent or smaller last scan. a mid-refresh item reads size 1 or no path for a tick,
+    // and believing it made the next good read a fake whole-stack pickup. shrink needs two agreeing scans
+    private readonly HashSet<(int, int)> _shrunkOnce = new();
+    private readonly List<(int, int)> _gone = new();
     private int _zoneSwitchId;
     private bool _seeded;
 
@@ -36,6 +40,7 @@ public class PickupTracker
     {
         _prevSlots.Clear();
         _curSlots.Clear();
+        _shrunkOnce.Clear();
         _zoneSwitchId = zoneSwitchId;
         _seeded = false;
     }
@@ -45,61 +50,73 @@ public class PickupTracker
     public List<PickupItem> Scan(GameController gc, DateTime enteredAt)
     {
         var picks = new List<PickupItem>();
-
-        var holder = gc.IngameState.ServerData.PlayerInventories
-            ?.FirstOrDefault(h => h?.TypeId.ToString() == "MainInventory1");
-        var slots = holder?.Inventory?.InventorySlotItems;
+        var slots = InventoryScan.MainInventory(gc)?.InventorySlotItems;
         if (slots == null)
             return picks;
 
         var elapsed = Math.Round((DateTime.UtcNow - enteredAt.ToUniversalTime()).TotalSeconds, 1);
         var playerPos = gc.Player?.GridPos ?? default;
 
-        // Current slot occupancy, rebuilt into the reused _curSlots each tick (a vacated slot just drops out).
+        // own pass first: InventorySlotItems can yield a slot twice per tick, the dict collapses repeats
         _curSlots.Clear();
+        _itemsBySlot.Clear();
         foreach (var slot in slots)
         {
             var item = slot?.Item;
             if (item == null || string.IsNullOrEmpty(item.Path))
                 continue;
-
             var key = ((int)slot.PosX, (int)slot.PosY);
             var size = item.TryGetComponent<Stack>(out var stack) ? stack.Size : 1;
             _curSlots[key] = (item.Path, size);
-
-            // Don't log on the seeding pass — items already in the bag at entry aren't pickups.
-            if (!_seeded)
-                continue;
-
-            int gained;
-            if (!_prevSlots.TryGetValue(key, out var prev))
-                gained = size;                   // slot was empty -> an item landed here
-            else if (prev.Path != item.Path)
-                gained = size;                   // a different item now occupies this slot
-            else if (size > prev.Size)
-                gained = size - prev.Size;       // same stack grew
-            else
-                continue;                        // unchanged (or shrank) -> not a pickup
-
-            var pick = ItemRecord.Read<PickupItem>(item, gc);
-            // ItemRecord.Read prices the whole entity stack; a merge-pickup only gained part of it, so
-            // scale to the gained amount (perUnit * gained). Full-stack pickups (gained == StackSize) are
-            // unchanged.
-            if (pick.ChaosValue is { } full && pick.StackSize > 0 && gained != pick.StackSize)
-                pick.ChaosValue = full / pick.StackSize * gained;
-            pick.PickedUpAt = DateTime.Now;
-            pick.ElapsedSeconds = elapsed;
-            pick.ZoneSwitchId = _zoneSwitchId;
-            pick.StackCount = gained;
-            pick.PlayerGridX = playerPos.X;
-            pick.PlayerGridY = playerPos.Y;
-            picks.Add(pick);
+            _itemsBySlot[key] = item;
         }
 
-        // Make the current snapshot the new baseline by swapping buffers; next tick clears + refills the old
-        // baseline as _curSlots. No allocation, no copy.
-        (_prevSlots, _curSlots) = (_curSlots, _prevSlots);
+        if (_seeded)
+        {
+            foreach (var (key, cur) in _curSlots)
+            {
+                int gained;
+                if (!_prevSlots.TryGetValue(key, out var prev))
+                    gained = cur.Size;
+                else if (prev.Path != cur.Path)
+                    gained = cur.Size;
+                else if (cur.Size > prev.Size)
+                    gained = cur.Size - prev.Size;
+                else
+                    continue;
+
+                var pick = ItemRecord.Read<PickupItem>(_itemsBySlot[key], gc);
+                if (pick.ChaosValue is { } full && pick.StackSize > 0 && gained != pick.StackSize)
+                    pick.ChaosValue = full / pick.StackSize * gained;
+                pick.PickedUpAt = DateTime.Now;
+                pick.ElapsedSeconds = elapsed;
+                pick.ZoneSwitchId = _zoneSwitchId;
+                pick.StackCount = gained;
+                pick.PlayerGridX = playerPos.X;
+                pick.PlayerGridY = playerPos.Y;
+                picks.Add(pick);
+            }
+        }
         _seeded = true;
+
+        // fold into the baseline. grew/changed is believed at once, shrank/vanished needs a second scan
+        foreach (var (key, cur) in _curSlots)
+        {
+            if (_prevSlots.TryGetValue(key, out var prev) && prev.Path == cur.Path
+                && cur.Size < prev.Size && _shrunkOnce.Add(key))
+                continue;
+            _shrunkOnce.Remove(key);
+            _prevSlots[key] = cur;
+        }
+        _gone.Clear();
+        foreach (var key in _prevSlots.Keys)
+            if (!_curSlots.ContainsKey(key) && !_shrunkOnce.Add(key))
+                _gone.Add(key);
+        foreach (var key in _gone)
+        {
+            _prevSlots.Remove(key);
+            _shrunkOnce.Remove(key);
+        }
 
         return picks;
     }

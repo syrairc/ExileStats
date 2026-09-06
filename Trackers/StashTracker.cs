@@ -22,9 +22,21 @@ public class StashTracker
     private readonly Dictionary<string, StashTabSnapshot> _tabs = new();
 
     public IReadOnlyDictionary<string, StashTabSnapshot> Tabs => _tabs;
-    public double TotalExalted => _tabs.Values.Sum(t => t.TotalExalted);
-    public int ItemCount => _tabs.Values.Sum(t => t.ItemCount);
+    private double _totalExalted;
+    private int _itemCount;
+    public double TotalExalted => _totalExalted;
+    public int ItemCount => _itemCount;
     public int TabCount => _tabs.Count;
+
+    // recomputed after every tab change so the per-frame readout reads two fields
+    private void Recalc()
+    {
+        double ex = 0;
+        int n = 0;
+        foreach (var t in _tabs.Values) { ex += t.TotalExalted; n += t.ItemCount; }
+        _totalExalted = ex;
+        _itemCount = n;
+    }
 
     /// <summary>Seed the in-memory tabs from a previously-saved tabs.json so net worth survives a plugin
     /// reload (each tab is then refreshed as the player reopens it).</summary>
@@ -35,6 +47,7 @@ public class StashTracker
         foreach (var kv in saved)
             if (kv.Value != null)
                 _tabs[kv.Key] = kv.Value;
+        Recalc();
     }
 
     /// <summary>Rescan every loaded stash tab (and the backpack if requested), refreshing per-tab snapshots.
@@ -107,14 +120,14 @@ public class StashTracker
 
         if (includeInventory)
             ScanInventory(gc, now);
+
+        Recalc();
     }
 
     // The main inventory (backpack), stored as the pseudo-tab "Inventory". Same access PickupTracker uses.
     private void ScanInventory(GameController gc, DateTime now)
     {
-        var holder = gc.IngameState.ServerData.PlayerInventories
-            ?.FirstOrDefault(h => h?.TypeId.ToString() == "MainInventory1");
-        var slots = holder?.Inventory?.InventorySlotItems;
+        var slots = InventoryScan.MainInventory(gc)?.InventorySlotItems;
         if (slots == null)
             return;
 

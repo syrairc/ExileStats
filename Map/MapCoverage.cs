@@ -24,6 +24,10 @@ public static class MapCoverage
     /// area within this radius of the path. Baked as the <c>MonsterRevealRadius</c> setting default.</summary>
     public const float DefaultMonsterRevealRadius = 230f;
 
+    /// <summary>Default explored-area tint (argb, alpha = opacity). Baked as the
+    /// <c>ExploredTintColor</c> setting default and the report's fallback tint.</summary>
+    public static readonly System.Drawing.Color DefaultTint = System.Drawing.Color.FromArgb(64, 0, 200, 0);
+
     public readonly record struct Result(double Percent, int TotalWalkable, int ExploredWalkable);
 
     /// <summary>The explored-cell raster behind a coverage result: the per-cell explored flags plus grid

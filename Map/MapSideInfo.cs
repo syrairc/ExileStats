@@ -21,7 +21,7 @@ public class MapContentEntry
 /// Reads the per-map "Map Objectives" and "Map Content" panel
 /// (<c>IngameState.IngameUi.MapSideUI</c>). Walks the element subtree once and classifies each node:
 /// content icons by their <c>AtlasIconContent&lt;Name&gt;.dds</c> texture (only <see cref="Element.IsVisible"/>
-/// ones — there's a hidden all-icons template node), objectives by their readable text. Index-independent
+/// ones - there's a hidden all-icons template node), objectives by their readable text. Index-independent
 /// so it survives the panel's layout shifting between map types.
 /// </summary>
 public static class MapSideInfo
@@ -44,12 +44,12 @@ public static class MapSideInfo
 
         var root = gc?.IngameState?.IngameUi?.MapSideUI;
         if (root is { IsVisible: true })
-            Walk(root, objectives, content);
+            Walk(root, gc, objectives, content);
 
         return (objectives.Distinct().ToList(), content);
     }
 
-    private static void Walk(Element e, List<string> objectives, List<MapContentEntry> content)
+    private static void Walk(Element e, GameController gc, List<string> objectives, List<MapContentEntry> content)
     {
         // Prune invisible subtrees: skips the sibling QuestTracker (campaign quest text) and the hidden
         // all-icons content template. Chain visibility means a visible node can't sit under an invisible
@@ -57,13 +57,14 @@ public static class MapSideInfo
         if (e is not { IsVisible: true })
             return;
 
-        var tex = e.TextureName;
+        // ElementTexture, not e.TextureName: the framework property is broken on 0.5.5 and matched nothing
+        var tex = ElementTexture.Of(e, gc);
         if (!string.IsNullOrEmpty(tex) && tex.Contains(ContentTextureMarker))
             content.Add(new MapContentEntry
             {
                 Name = ContentName(tex),
                 Texture = tex,
-                Completed = HasVisibleCheck(e),
+                Completed = HasVisibleCheck(e, gc),
                 Objective = CleanObjective(e.Tooltip?.TextNoTags),
             });
 
@@ -74,7 +75,7 @@ public static class MapSideInfo
         var children = e.Children;
         if (children != null)
             foreach (var c in children)
-                Walk(c, objectives, content);
+                Walk(c, gc, objectives, content);
     }
 
     // "Art/.../AtlasIconContentCheckpoint.dds" -> "Checkpoint".
@@ -89,17 +90,17 @@ public static class MapSideInfo
     // True if any node in the icon's subtree is a *visible* check-mark (MapObjectiveCheck.dds), which the
     // game shows when that content is complete. Walks the full subtree (not visibility-pruned) so we can
     // read the check's own IsVisible directly.
-    private static bool HasVisibleCheck(Element e)
+    private static bool HasVisibleCheck(Element e, GameController gc)
     {
         if (e == null)
             return false;
-        var tex = e.TextureName;
+        var tex = ElementTexture.Of(e, gc);
         if (e.IsVisible && !string.IsNullOrEmpty(tex) && tex.Contains(CheckMarker))
             return true;
         var children = e.Children;
         if (children != null)
             foreach (var c in children)
-                if (HasVisibleCheck(c))
+                if (HasVisibleCheck(c, gc))
                     return true;
         return false;
     }

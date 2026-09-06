@@ -10,29 +10,42 @@ public partial class ExileStats
     internal void Err(string message) => LogError(message);
 
     // The one place trackers are declared. Add a monitor = add a line here (no Tick edits, no extra entity
-    // pass). Columns: name, entity bucket needed, requires a tracked area, enabled-gate, interval-ms, run.
+    // pass). Columns: name, requires a tracked area, enabled-gate, interval-ms, run.
     private TrackerDispatcher BuildDispatcher() => new(
-        new DelegateTracker("Monsters", EntityNeed.Monsters, requiresTrackedArea: true,
-            s => s.CountMonsters && (s.ShowCounter || s.LogToFile || s.LogSnapshots || s.LogMonsterPositions),
+        new DelegateTracker("Monsters", requiresTrackedArea: true,
+            s => (s.CountMonsters && s.ShowCounter) || s.LogToFile || s.LogSnapshots || s.LogMonsterPositions,
             s => 0, MonsterScan),
-        new DelegateTracker("Loot", EntityNeed.WorldItems, true,
+        new DelegateTracker("Loot", true,
             s => s.LogLoot, s => s.LootScanIntervalMs.Value, LootScan),
-        new DelegateTracker("Content", EntityNeed.AllValid, true,
+        new DelegateTracker("Content", true,
             s => s.LogContent, s => s.ContentScanIntervalMs.Value, ContentScan),
-        new DelegateTracker("Wisps", EntityNeed.AllValid, true,
+        new DelegateTracker("Wisps", true,
             s => s.LogWisps, s => s.WispScanIntervalMs.Value, WispScan),
-        new DelegateTracker("Pickups", EntityNeed.None, true,
+        new DelegateTracker("Pickups", true,
             s => s.LogPickups, s => s.PickupScanIntervalMs.Value, PickupScan),
-        new DelegateTracker("MapInfo", EntityNeed.None, true,
+        new DelegateTracker("MapInfo", true,
             s => s.LogToFile, s => 0, MapSideRun),
-        new DelegateTracker("Snapshot", EntityNeed.None, true,
+        new DelegateTracker("Snapshot", true,
             s => s.LogSnapshots, s => s.SnapshotIntervalSeconds.Value * 1000, SnapshotRun),
-        new DelegateTracker("Path", EntityNeed.None, true,
+        new DelegateTracker("Path", true,
             s => s.LogPath, s => 0, PathRun),
-        new DelegateTracker("Deaths", EntityNeed.Monsters, true,
+        new DelegateTracker("Deaths", true,
             s => s.LogDeaths, s => 0, DeathRun),
-        new DelegateTracker("NetWorth", EntityNeed.None, requiresTrackedArea: false,
-            s => s.TrackNetWorth, s => 0, NetWorthRun));
+        // stash scan once a second, not per tick. the 30s write gate inside NetWorthRun is unchanged
+        new DelegateTracker("NetWorth", requiresTrackedArea: false,
+            s => s.TrackNetWorth, s => 1000, NetWorthRun),
+        // slow inputs shared by every readout: omen presence + divine rate, once a second, in town too
+        new DelegateTracker("Slow", requiresTrackedArea: false,
+            s => true, s => 1000, SlowRun));
+
+    private const string AmeliorationOmen = "Omen of Amelioration";
+
+    private void SlowRun(in TrackerContext ctx)
+    {
+        if (Settings.ShowStatsOverlay && Settings.OverlayShowOmenWarning)
+            _hasOmen = InventoryScan.HasBaseItem(GameController, AmeliorationOmen);
+        _divRate = ItemPricer.GetDivineRate(GameController) ?? 0;
+    }
 
     private void MonsterScan(in TrackerContext ctx)
     {
@@ -54,25 +67,29 @@ public partial class ExileStats
     {
         // Lazy callbacks: the tribute HUD / expedition label walk only fire while that mechanic is present.
         var dirty = _contentTracker.Scan(ctx.Buckets.AllValid, ctx.ElapsedSeconds,
-            () => RitualTribute.Read(GameController.IngameState.IngameUi),
+            () => RitualTribute.Read(GameController),
             () => ExpeditionRewards.Read(GameController),
-            () => _ritualRewards.Update(GameController));
+            () => _ritualRewards.Update(GameController), _dispatcher.Profiler);
         if (dirty.Count > 0)
+        {
+            _dispatcher.Profiler.Begin("Content.append");
             ContentLog.Append(DirectoryFullName, ctx.Area.AreaId, ctx.Area.InstanceHash, dirty);
+            _dispatcher.Profiler.End("Content.append");
+        }
     }
 
     private void WispScan(in TrackerContext ctx)
     {
         // AllValid, not the Monster bucket: the roaming wisp's entity type isn't confirmed, and the tracker
-        // filters monsters itself — so this can't miss a non-Monster-typed wisp.
-        var dirty = _wispTracker.Scan(ctx.Buckets.AllValid, ctx.ElapsedSeconds);
+        // filters monsters itself - so this can't miss a non-Monster-typed wisp.
+        var dirty = _wispTracker.Scan(ctx.Buckets.AllValid, ctx.Buckets.Monsters, ctx.ElapsedSeconds);
         if (dirty.Count > 0)
             WispLog.Append(DirectoryFullName, ctx.Area.AreaId, ctx.Area.InstanceHash, dirty);
     }
 
     private void PickupScan(in TrackerContext ctx)
     {
-        var picks = _pickupTracker.Scan(GameController, ctx.Area.EnteredAt);
+        var picks = _pickupTracker.Scan(GameController, _areaEnteredUtc);
         if (picks.Count > 0)
             PickupLog.Append(DirectoryFullName, ctx.Area.AreaId, ctx.Area.InstanceHash, picks);
     }
@@ -110,7 +127,7 @@ public partial class ExileStats
     private void DeathRun(in TrackerContext ctx) => TryLogDeath(ctx.Buckets.Monsters);
 
     // Net worth: while the stash panel is open, scan every loaded tab (+ backpack) and log net worth. Runs in
-    // towns/hideouts too (RequiresTrackedArea=false) — that's where the stash is opened.
+    // towns/hideouts too (RequiresTrackedArea=false) - that's where the stash is opened.
     private void NetWorthRun(in TrackerContext ctx)
     {
         var stash = _ingameUi?.StashElement;
@@ -123,7 +140,6 @@ public partial class ExileStats
             return;
 
         var ex = _stashTracker.TotalExalted;
-        _lastDivineRate = ItemPricer.GetDivineRate(GameController);
 
         // Skip partial-tab reads: a total that craters below a fraction of the session peak means not all
         // tabs have streamed in (or pricing isn't ready). Don't persist it to tabs.json or networth.json.
@@ -144,8 +160,8 @@ public partial class ExileStats
             {
                 At = DateTime.Now,
                 TotalExalted = ex,
-                TotalDivine = _lastDivineRate is > 0 ? ex / _lastDivineRate.Value : null,
-                DivineRate = _lastDivineRate,
+                TotalDivine = _divRate > 0 ? ex / _divRate : null,
+                DivineRate = _divRate > 0 ? _divRate : (double?)null,
                 TabCount = _stashTracker.TabCount,
                 ItemCount = _stashTracker.ItemCount,
                 IncludesInventory = Settings.NetWorthIncludeInventory.Value,
